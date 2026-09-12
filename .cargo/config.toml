@@ -1,0 +1,10 @@
+# Reproducible release link (release audit provenance).
+#
+# /Brepro stabilizes the PE COFF timestamp and the CodeView PDB GUID;
+# /PDBALTPATH strips the absolute build-directory path from the CodeView
+# record (only the file name is embedded). Together with
+# CHROMA_RANDOMX_PATHMAP (see vendor/randomx-rs/build.rs) for the vendored
+# C++ __FILE__ literals, two clean checkouts at different absolute paths
+# produce bit-identical release artifacts (verified: matching SHA-256).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/Brepro", "-C", "link-arg=/PDBALTPATH:%_PDB%"]

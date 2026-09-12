@@ -72,3 +72,42 @@ so the genesis bytes are kept, loudly documented here, NOT silently.
 
 See the final audit report: `MAINNET V1.0: NO-GO`. Do not publish either
 artifact as a final release.
+
+## Reproducible build record (v0.1.0-rc2)
+
+Release procedure (both proof builds):
+
+```text
+git checkout v0.1.0-rc2 (clean tree, submodules n/a — vendor is in-tree)
+set RUSTFLAGS=-C link-arg=/Brepro -C link-arg=/PDBALTPATH:%_PDB%
+  (also pinned in-tree as .cargo/config.toml for x86_64-pc-windows-msvc)
+set CHROMA_RANDOMX_PATHMAP=<checkout>\vendor\randomx-rs\RandomX=RandomX
+cargo build --release --locked -p chroma-cli
+```
+
+Bit-for-bit result (two separate clean checkouts, separate target dirs):
+
+- Build #1 SHA-256: `F04B3F60AE66D2B7D1972E6AE8F8E6DF96EE309112B1820B1A6CED14F9A489F7`
+- Build #2 SHA-256: `F04B3F60AE66D2B7D1972E6AE8F8E6DF96EE309112B1820B1A6CED14F9A489F7`
+- `fc /b`: no differences. Sizes: 8,985,600 bytes each.
+
+Nondeterminism sources found and neutralized (all build-metadata only,
+no consensus/behavior change):
+
+- PE COFF TimeDateStamp + CodeView PDB GUID (final link) → `/Brepro`.
+- Absolute PDB path in the CodeView record → `/PDBALTPATH:%_PDB%`.
+- Absolute C++ `__FILE__` literals (CRT assert paths in
+  `randomx.cpp`/`dataset.cpp`/`reciprocal.c`) → `/pathmap` + `/d1trimfile`
+  via `CHROMA_RANDOMX_PATHMAP` (see `vendor/randomx-rs/build.rs`).
+
+Environment-integrity note: during this audit the file
+`vendor/randomx-rs/RandomX/src/asm/configuration.asm` was twice overwritten
+with local `fastfetch` output, breaking the MASM step (`error A2008`).
+Root cause (proven): RandomX's VS build regenerates that file via
+`powershell -File h2inc.ps1 ... > configuration.asm`, and this machine's
+PowerShell `$PROFILE` runs `fastfetch` (+ `Set-Location`, which also breaks
+h2inc's relative paths so only the fastfetch banner lands in the file).
+Mitigation for release builds: verify the file (1438 bytes LF in git,
+`57541A81…ADC` SHA-256 of the CRLF checkout copy) and set it read-only
+before building. The committed blob is pristine; DNS steps and the two
+proof builds above used the pristine bytes.

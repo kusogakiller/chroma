@@ -26,9 +26,27 @@ use cmake::Config;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-    let randomx_path = Config::new(env::var("RANDOMX_DIR").unwrap_or_else(|_| "RandomX".to_string()))
-        .define("DARCH", "native")
-        .build();
+    let mut cfg =
+        Config::new(env::var("RANDOMX_DIR").unwrap_or_else(|_| "RandomX".to_string()));
+    cfg.define("DARCH", "native");
+    // Reproducible-build path mapping (release provenance): when the
+    // CHROMA_RANDOMX_PATHMAP env var is set to "old=new", forward it as
+    // MSVC /pathmap (PDB paths; does not cover __FILE__) and /d1trimfile
+    // (trims the prefix from __FILE__ literals such as the CRT assert paths
+    // in randomx.cpp/dataset.cpp/reciprocal.c). Both builds must map to the
+    // same `new` value; e.g. old=<checkout>\vendor\randomx-rs\RandomX,
+    // new=RandomX. Unset (dev/test builds): no effect.
+    if let Ok(mapping) = env::var("CHROMA_RANDOMX_PATHMAP") {
+        let flag = format!("/pathmap:{}", mapping);
+        cfg.cflag(flag.clone());
+        cfg.cxxflag(flag);
+        if let Some((old, _)) = mapping.split_once('=') {
+            let trim = format!("/d1trimfile:{}", old);
+            cfg.cflag(trim.clone());
+            cfg.cxxflag(trim);
+        }
+    }
+    let randomx_path = cfg.build();
 
     println!("cargo:rustc-link-search=native={}/lib64", randomx_path.display());
     println!("cargo:rustc-link-search=native={}/lib", randomx_path.display());
