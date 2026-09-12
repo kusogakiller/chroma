@@ -89,7 +89,7 @@ Bit-for-bit result (two separate clean checkouts, separate target dirs):
 
 - Build #1 SHA-256: `F04B3F60AE66D2B7D1972E6AE8F8E6DF96EE309112B1820B1A6CED14F9A489F7`
 - Build #2 SHA-256: `F04B3F60AE66D2B7D1972E6AE8F8E6DF96EE309112B1820B1A6CED14F9A489F7`
-- `fc /b`: no differences. Sizes: 8,985,600 bytes each.
+- `fc /b`: no differences. Sizes: 8,979,968 bytes each.
 
 Nondeterminism sources found and neutralized (all build-metadata only,
 no consensus/behavior change):
