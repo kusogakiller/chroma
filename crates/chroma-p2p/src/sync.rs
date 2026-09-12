@@ -137,7 +137,6 @@ impl ChainSyncer {
             }
         }
 
-        // Always include genesis
         if let Some(genesis_hash) = self.known_headers.get(&0).copied() {
             if locators.last() != Some(&genesis_hash) {
                 locators.push(genesis_hash);
@@ -153,7 +152,6 @@ impl ChainSyncer {
         if *start_hash == Hash::ZERO {
             return Some(0);
         }
-        // Search our known headers for this hash
         for (height, hash) in &self.known_headers {
             if hash == start_hash {
                 return Some(*height);
@@ -162,20 +160,18 @@ impl ChainSyncer {
         None
     }
 
-    /// Check if we should enter Initial Block Download mode.
-    ///
-    /// IBD is triggered when the local chain is significantly behind the peer.
+    /// True when the local chain is far enough behind the peer to use IBD.
     pub fn should_enter_ibd(&self, local_tip_height: u32, peer_height: u32) -> bool {
         peer_height > local_tip_height + IBD_HEIGHT_THRESHOLD
     }
 
-    /// Check if we're in IBD mode (significantly behind).
+    /// True while downloading the initial chain.
     pub fn is_in_initial_block_download(&self) -> bool {
         self.state == SyncState::SyncingBlocks
             && self.best_height > self.synced_header_height + IBD_HEIGHT_THRESHOLD
     }
 
-    /// Check if a sync operation has timed out.
+    /// True when the outstanding sync request is older than the timeout.
     pub fn is_sync_timed_out(&self) -> bool {
         if let Some(last_request) = self.last_sync_request_time {
             last_request.elapsed() > Duration::from_secs(SYNC_RESPONSE_TIMEOUT_SECS)
@@ -184,23 +180,22 @@ impl ChainSyncer {
         }
     }
 
-    /// Record a sync failure (invalid block, timeout, etc.).
+    /// Record one sync failure.
     pub fn record_sync_failure(&mut self) {
         self.consecutive_sync_failures += 1;
     }
 
-    /// Reset consecutive sync failures (on successful block application).
+    /// Clear the failure count after a successful block.
     pub fn clear_sync_failure(&mut self) {
         self.consecutive_sync_failures = 0;
     }
 
-    /// Check if we've exceeded the maximum sync failures threshold.
+    /// True once failures reach the ban threshold.
     pub fn is_peer_banned_for_sync(&self) -> bool {
         self.consecutive_sync_failures >= MAX_SYNC_FAILURES
     }
 
-    /// Begin block sync after headers are synced.
-    /// Requests a batch of blocks starting from the given hash.
+    /// Begin block sync with a batch starting from the given hash.
     pub fn start_block_sync(
         &mut self,
         peer: SocketAddr,
@@ -211,14 +206,12 @@ impl ChainSyncer {
         self.sync_peer = Some(peer);
         self.last_sync_request_time = Some(Instant::now());
 
-        // Build a batch of block hashes to request
         let mut inventory = Vec::new();
         inventory.push(InvEntry {
             inv_type: InvType::Block,
             hash: from_hash,
         });
 
-        // Add subsequent blocks if we know their hashes
         let start_height = _from_height;
         for h in (start_height + 1)
             ..=(start_height + MAX_BLOCKS_PER_REQUEST as u32).min(self.best_height)
@@ -231,7 +224,6 @@ impl ChainSyncer {
             }
         }
 
-        // Track these as pending
         self.pending_block_requests = inventory.iter().skip(1).map(|e| e.hash).collect();
 
         GetDataMessage { inventory }
@@ -246,12 +238,13 @@ impl ChainSyncer {
     /// - no height conflicts with a DIFFERENT known hash (gap-fill only:
     ///   same-hash overlaps are idempotent and fine; different-hash
     ///   overwrites would poison sync state, so the whole batch is refused
-    ///   and the caller scores the sender),
+    ///   without scoring),
     /// - it fits within MAX_KNOWN_HEADERS.
     ///
-    /// Unlinked/conflicting batches cannot advance sync and are ignored by
-    /// the caller (which scores the sender). Full PoW verification happens
-    /// later at block application, where failures ban the sender.
+    /// Unlinked/conflicting batches cannot advance sync and are ignored
+    /// without score: at header layer a conflict is ambiguous. Full PoW
+    /// verification happens later at block application, where only exact
+    /// Byzantine failures score.
     pub fn header_batch_valid(&self, headers: &[BlockHeader]) -> bool {
         if headers.is_empty() || headers.len() > MAX_HEADERS_PER_RESPONSE {
             return false;
@@ -330,7 +323,6 @@ impl ChainSyncer {
                 }
             }
 
-            // Track the best
             if height > self.best_height {
                 self.best_height = height;
                 self.best_hash = hash;
@@ -340,12 +332,10 @@ impl ChainSyncer {
             self.pending_headers.push(header.clone());
         }
 
-        // If we received fewer than MAX_HEADERS_PER_RESPONSE, peer is done
         if headers.len() < MAX_HEADERS_PER_RESPONSE {
             if self.best_height > self.synced_header_height {
                 self.state = SyncState::SyncingBlocks;
                 self.next_height = self.synced_header_height + 1;
-                // Request first batch of blocks
                 let mut batch = Vec::new();
                 for h in self.next_height
                     ..=(self.next_height + MAX_BLOCKS_PER_REQUEST as u32).min(self.best_height)
@@ -365,7 +355,6 @@ impl ChainSyncer {
                 commands.push(SyncCommand::SyncComplete);
             }
         } else {
-            // Request more headers
             commands.push(SyncCommand::GetHeaders(self.best_hash));
         }
 
@@ -396,12 +385,11 @@ impl ChainSyncer {
         let synced = self.synced_header_height;
         self.pending_headers.retain(|h| h.height.0 > synced);
 
-        // Clear consecutive failures on successful block
         self.clear_sync_failure();
         self.last_sync_request_time = Some(Instant::now());
     }
 
-    /// Check if we need to request more blocks.
+    /// True when the block queue is drained but sync is not finished.
     pub fn needs_blocks(&self) -> bool {
         self.state == SyncState::SyncingBlocks && self.pending_block_requests.is_empty()
     }
@@ -508,8 +496,6 @@ impl ChainSyncer {
     pub fn detect_block_fork(&self, block_height: u32, block_hash: &Hash) -> Option<u32> {
         if let Some(&existing_hash) = self.known_headers.get(&block_height) {
             if existing_hash != *block_hash && block_height > 0 {
-                // This block competes with an existing block at the same height
-                // The fork point is at block_height - 1
                 return Some(block_height - 1);
             }
         }
@@ -521,24 +507,20 @@ impl ChainSyncer {
 // Fork Detection
 // ============================================================================
 
-/// Information about a fork point.
+/// A fork point with the heights to roll back and re-apply.
 #[derive(Clone, Debug)]
 pub struct ForkInfo {
-    /// Height of the fork point (last common ancestor).
+    /// Height of the last common ancestor.
     pub fork_height: u32,
     /// Hash of the fork point block.
     pub fork_hash: Hash,
-    /// Blocks to roll back (from tip down to fork+1).
+    /// Heights to roll back, tip down to fork+1.
     pub rollback_heights: Vec<u32>,
-    /// Blocks to apply (from fork+1 up to new tip).
+    /// Heights to apply, fork+1 up to the new tip.
     pub apply_heights: Vec<u32>,
 }
 
-/// Detect a fork and compute the reorg path.
-///
-/// `local_headers` maps height → header for the current best chain.
-/// `new_chain` is a sequence of headers from the fork point forward.
-/// `new_chain_start_height` is the height of the first header in `new_chain`.
+/// Find the fork point between the local chain and a new header sequence.
 pub fn detect_fork(
     local_headers: &BTreeMap<u32, BlockHeader>,
     new_chain: &[BlockHeader],
@@ -549,22 +531,17 @@ pub fn detect_fork(
         return None;
     }
 
-    // The fork point is the height where the new chain's parent matches
-    // the local chain. Walk the new chain from the beginning.
     let mut fork_height = None;
 
     for (i, header) in new_chain.iter().enumerate() {
         let h = new_chain_start_height + i as u32;
 
-        // If this height exists locally and matches, continue (no fork here yet)
         if let Some(local_header) = local_headers.get(&h) {
             if local_header.hash() == header.hash() {
                 continue;
             }
         }
 
-        // Height doesn't exist locally or hash differs — fork starts before this height.
-        // The fork point is h - 1, provided the parent matches.
         if h > 0 {
             let parent_height = h - 1;
             if let Some(local_parent) = local_headers.get(&parent_height) {
@@ -573,7 +550,6 @@ pub fn detect_fork(
                 }
             }
         }
-        // Once we find the first divergence, stop — later matches are at different chains
         break;
     }
 
@@ -671,7 +647,6 @@ mod tests {
         let msg = syncer.start_block_sync(peer, genesis, 0);
         assert_eq!(syncer.state, SyncState::SyncingBlocks);
         assert_eq!(syncer.sync_peer(), Some(peer));
-        // At minimum we request the genesis block itself
         assert!(!msg.inventory.is_empty());
         assert_eq!(msg.inventory[0].inv_type, InvType::Block);
         assert_eq!(msg.inventory[0].hash, genesis);
@@ -707,11 +682,9 @@ mod tests {
         let mut syncer = ChainSyncer::new(genesis);
         syncer.state = SyncState::SyncingHeaders;
 
-        // Less than MAX_HEADERS_PER_RESPONSE → signals end, but triggers block request
         let h1 = test_header(1, genesis);
         let cmds = syncer.received_headers(vec![h1]);
 
-        // Should transition to batch block request
         assert!(cmds.iter().any(|c| matches!(c, SyncCommand::GetBlocks(_))));
     }
 
@@ -776,10 +749,8 @@ mod tests {
         let h1 = Hash::blake3(b"block1");
         let _h0 = Hash::blake3(b"block0");
         syncer.received_headers(vec![]);
-        // Manually set best
         syncer.best_height = 1;
         syncer.best_hash = h1;
-        // Receiving a lower height should not regress
         assert_eq!(syncer.best_height, 1);
         assert_eq!(syncer.best_hash, h1);
     }
@@ -796,7 +767,6 @@ mod tests {
             .collect();
 
         let result = detect_fork(&local, &new_chain, 1, 5);
-        // Identical chains → no fork
         assert!(result.is_none());
     }
 
@@ -804,14 +774,12 @@ mod tests {
     fn test_fork_diverges_at_height_3() {
         let local = build_chain(5);
 
-        // New chain with completely different parent → no common ancestor
         let fake_prev = Hash::blake3(b"fake_parent_of_3");
         let h3_new = test_header(3, fake_prev);
         let h4_new = test_header(4, h3_new.hash());
         let h5_new = test_header(5, h4_new.hash());
 
         let result = detect_fork(&local, &[h3_new, h4_new, h5_new], 3, 5);
-        // fake_prev doesn't match local[2].hash(), so no common parent → no fork detected
         assert!(result.is_none());
     }
 
@@ -819,8 +787,6 @@ mod tests {
     fn test_fork_diverges_at_height_3_with_common_parent() {
         let local = build_chain(5);
 
-        // New chain: h3 has same parent as local[3] (local[2].hash()),
-        // but h3 has a different nonce, so its hash differs from local[3]
         let fork_hash = local.get(&2).unwrap().hash();
         let h3_new = BlockHeader {
             version: 1,
@@ -848,7 +814,6 @@ mod tests {
         let local = build_chain(5);
         let fork_hash = local.get(&3).unwrap().hash();
 
-        // New chain: extends from height 4 onward, diverging from local[3]
         let h4_new = BlockHeader {
             version: 1,
             previous_hash: fork_hash,
@@ -872,15 +837,8 @@ mod tests {
     #[test]
     fn test_no_fork_no_common_ancestor() {
         let local = build_chain(5);
-        // Completely unrelated chain
         let unrelated = test_header(1, Hash::blake3(b"unrelated"));
         let result = detect_fork(&local, &[unrelated], 1, 5);
-        // The unrelated block's previous_hash won't match any local header
-        // unless by coincidence. With test headers it won't match.
-        // Actually, the parent of height 1 in new chain is the previous_hash,
-        // which won't match local[0].hash(). So no fork found.
-        // BUT detect_fork also checks if any height matches directly.
-        // Since unrelated has height 1, and local[1] exists but has different hash, no match.
         assert!(result.is_none());
     }
 
@@ -897,20 +855,16 @@ mod tests {
         let mut syncer = ChainSyncer::new(genesis);
         let peer = "127.0.0.1:8333".parse().unwrap();
 
-        // Idle → SyncingHeaders
         assert_eq!(syncer.state, SyncState::Idle);
         syncer.start_header_sync(peer, genesis);
         assert_eq!(syncer.state, SyncState::SyncingHeaders);
 
-        // SyncingHeaders → SyncingBlocks
         syncer.start_block_sync(peer, genesis, 0);
         assert_eq!(syncer.state, SyncState::SyncingBlocks);
 
-        // SyncingBlocks → CaughtUp
         syncer.sync_complete();
         assert_eq!(syncer.state, SyncState::CaughtUp);
 
-        // CaughtUp → Idle (on failure)
         syncer.sync_failed();
         assert_eq!(syncer.state, SyncState::Idle);
     }
@@ -952,14 +906,11 @@ mod tests {
         let tip_hash = chain.get(&100).unwrap().hash();
         let locators = syncer.block_locator_hashes(tip_hash, 100);
 
-        // First locator should be the tip
         assert_eq!(locators[0], tip_hash);
 
-        // Last locator should be the chain's genesis (height 0)
         let chain_genesis = chain.get(&0).unwrap().hash();
         assert_eq!(*locators.last().unwrap(), chain_genesis);
 
-        // Should have exponentially decreasing heights
         assert!(locators.len() >= 3);
     }
 
@@ -968,19 +919,14 @@ mod tests {
         let genesis = Hash::blake3(b"genesis");
         let syncer = ChainSyncer::new(genesis);
 
-        // Local height 5, peer height 200 → IBD triggered (200 > 5 + 144)
         assert!(syncer.should_enter_ibd(5, 200));
 
-        // Local height 5, peer height 150 → IBD triggered (150 > 5 + 144)
         assert!(syncer.should_enter_ibd(5, 150));
 
-        // Local height 5, peer height 149 → NOT triggered (149 > 5 + 144 is false, 149 == 149)
         assert!(!syncer.should_enter_ibd(5, 149));
 
-        // Same height → not triggered
         assert!(!syncer.should_enter_ibd(10, 10));
 
-        // Peer behind → not triggered
         assert!(!syncer.should_enter_ibd(10, 5));
     }
 
@@ -1003,10 +949,8 @@ mod tests {
         let genesis = Hash::blake3(b"genesis");
         let mut syncer = ChainSyncer::new(genesis);
 
-        // No request sent → not timed out
         assert!(!syncer.is_sync_timed_out());
 
-        // Request just sent → not timed out
         syncer.last_sync_request_time = Some(Instant::now());
         assert!(!syncer.is_sync_timed_out());
     }
@@ -1053,7 +997,6 @@ mod tests {
         let h = Hash::blake3(b"block1");
         syncer.received_block(h, 1);
 
-        // Block received should clear failures
         assert!(!syncer.is_peer_banned_for_sync());
     }
 
@@ -1075,7 +1018,6 @@ mod tests {
         let mut syncer = ChainSyncer::new(genesis);
         syncer.state = SyncState::SyncingBlocks;
 
-        // No timeout → no retry
         assert!(!syncer.needs_block_retry());
 
         // Timed out → retry needed

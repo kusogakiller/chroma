@@ -301,11 +301,9 @@ impl std::str::FromStr for Address {
     type Err = crate::error::CoreError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Try Bech32 first (new format: chr...)
         if s.starts_with(ADDRESS_HRP) {
             return Address::from_bech32(s);
         }
-        // Fall back to hex (0x-prefixed or raw)
         let hex_str = s.strip_prefix("0x").unwrap_or(s);
         let bytes = hex::decode(hex_str)
             .map_err(|e| CoreError::InvalidFormat(format!("invalid hex address: {}", e)))?;

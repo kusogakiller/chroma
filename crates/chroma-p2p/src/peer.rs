@@ -622,7 +622,6 @@ impl PeerManager {
         if banned_count <= MAX_BANNED_RECORDS {
             return;
         }
-        // Drop banned peer records with the oldest ban expiry first.
         let mut with_expiry: Vec<(SocketAddr, Instant)> = self
             .peers
             .iter()

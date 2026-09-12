@@ -295,11 +295,11 @@ new_target = old_target × actual_time / target_time
 
 ### 10.5 Sync / IBD
 
-* Header batchはchain linkageを検証する（先頭がknown chainに接続し、heightが+1ずつ連続）。unlinked batchはbufferせずsenderをscore -100
+* Header batchはchain linkageを検証する（先頭がknown chainに接続し、heightが+1ずつ連続）。unlinked/conflicting batchはbufferせず、scoreせず無視する。header層ではhonest forkと区別できないため、有効・無効の判定はblock適用時のPoW/state検証で行い、確定したByzantine判定だけscoreする
 * sync中はsync peer以外のbatch（空batch含む）を無視する。切断時はsync stateをresetし、健全peerが引き継げる
 * header buffer上限は10,000件（`MAX_PENDING_HEADERS`）
 * GetHeaders応答は2000件まで。block batch要求は500件まで
-* sync失敗カウンタは5回でpeer-ban event（`MAX_SYNC_FAILURES`）。invalid blockは送信peerにもscore -100
+* sync失敗カウンタは5回でpeer-ban event（`MAX_SYNC_FAILURES`）。invalid blockのうちPoW・state/merkle root・coinbase・size・署名の確定失敗だけ送信peerにscore -100する。fork/orphan/staleの競合はscoreしない
 
 ### 10.6 Noise Transport（implemented）
 
@@ -380,10 +380,11 @@ chroma/
 │   ├── chroma-tx/            # Transaction, Validation, Mempool
 │   ├── chroma-block/         # Header, Block, Validation
 │   ├── chroma-consensus/     # Fork Choice, Difficulty, PoW Verify
-│   ├── chroma-storage/       # RocksDB Backend
-│   ├── chroma-p2p/            # Networking
-│   ├── chroma-wallet/         # Key Management
-│   └── chroma-cli/            # Main Binary
+│   ├── chroma-storage/       # sled Backend
+│   ├── chroma-p2p/           # Networking
+│   ├── chroma-wallet/        # Key Management
+│   ├── chroma-rpc/           # JSON-RPC
+│   └── chroma-cli/           # Main Binary
 ├── tests/
 │   ├── unit/
 │   ├── integration/

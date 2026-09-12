@@ -307,24 +307,20 @@ impl Wallet {
         recipient: Address,
         amount: Amount,
     ) -> Result<SendResult> {
-        // 1. Validate amount
         if amount == Amount::ZERO {
             return Err(CoreError::InvalidTransaction(
                 "amount must be greater than zero".to_string(),
             ));
         }
 
-        // 2. Validate recipient is not self
         if recipient == self.address {
             return Err(CoreError::InvalidTransaction(
                 "cannot send to self".to_string(),
             ));
         }
 
-        // 3. Get account info (balance, nonce) from chain
         let account = Self::get_account_info(rpc_url, &self.address).await?;
 
-        // 4. Check balance
         if account.balance < amount.0 {
             return Err(CoreError::InvalidTransaction(format!(
                 "insufficient balance: have {} CHR, need {} CHR",
@@ -335,10 +331,9 @@ impl Wallet {
 
         let nonce = Nonce(account.nonce);
 
-        // 5. Build and sign transaction
         let prepared = self.prepare_transaction(recipient, amount, nonce)?;
 
-        // 6. Re-fetch nonce right before submission to detect concurrent sends
+        // Re-fetch to detect a concurrent send before submitting.
         let account_before_submit = Self::get_account_info(rpc_url, &self.address).await?;
         if account_before_submit.nonce != account.nonce {
             return Err(CoreError::InvalidTransaction(
@@ -346,7 +341,6 @@ impl Wallet {
             ));
         }
 
-        // 7. Submit to mempool
         let submit = Self::submit_transaction(rpc_url, &prepared.encoded).await?;
 
         Ok(SendResult {
@@ -560,7 +554,6 @@ mod tests {
         let p1 = generate_seed_phrase();
         let p2 = generate_seed_phrase();
         let p3 = generate_seed_phrase();
-        // With CSPRNG, 12-word phrases from 2048 words should almost never collide
         assert_ne!(p1, p2);
         assert_ne!(p2, p3);
         assert_ne!(p1, p3);
@@ -827,16 +820,12 @@ mod tests {
 
     #[test]
     fn test_coinbase_rejection_via_create_transaction() {
-        // Coinbase transactions have zero sender_pubkey and zero signature
-        // A wallet cannot create a coinbase transaction
         let wallet = Wallet::generate("test");
         let recipient = make_recipient();
         let tx = wallet
             .create_transaction(recipient, Amount(1_000_000), Nonce(0))
             .unwrap();
-        // Coinbase would have empty signature; our tx has a real signature
         assert_ne!(tx.signature.0, [0u8; 64]);
-        // Coinbase would have zero pubkey; ours has a real pubkey
         assert_ne!(tx.sender_pubkey.0, [0u8; 32]);
     }
 
@@ -980,7 +969,6 @@ mod tests {
         let secret = SecretKey32::from_bytes([0x42; 32]).unwrap();
         let w_main = Wallet::from_secret_key_for_network("m", secret, MAINNET_MAGIC).unwrap();
         let w_reg = Wallet::from_secret_key_for_network("r", secret, REGTEST_MAGIC).unwrap();
-        // Same key → same address across networks (addresses are not network-specific).
         assert_eq!(w_main.address(), w_reg.address());
         let tx_main = w_main
             .create_transaction(make_recipient(), Amount(1_000_000), Nonce(0))
@@ -988,7 +976,6 @@ mod tests {
         let tx_reg = w_reg
             .create_transaction(make_recipient(), Amount(1_000_000), Nonce(0))
             .unwrap();
-        // Same unsigned body, different signatures → different encodings.
         assert_eq!(tx_main.encode()[..68], tx_reg.encode()[..68]);
         assert_ne!(tx_main.encode(), tx_reg.encode());
         assert!(tx_main.verify_signature(MAINNET_MAGIC));
@@ -999,8 +986,6 @@ mod tests {
 
     #[test]
     fn test_parse_submit_response_ok_with_null_error() {
-        // Real servers serialize success as {"result": {...}, "error": null}.
-        // A null error must NOT be treated as failure.
         let resp = serde_json::json!({
             "jsonrpc": "2.0",
             "result": { "tx_hash": "abc123" },
@@ -1032,7 +1017,6 @@ mod tests {
 
     #[test]
     fn test_parse_submit_response_rejects_missing_result() {
-        // Neither result nor error → must fail, never fake success.
         let resp = serde_json::json!({ "jsonrpc": "2.0", "id": 1 });
         assert!(Wallet::parse_submit_response(&resp).is_err());
     }
@@ -1145,7 +1129,6 @@ mod tests {
 
     #[test]
     fn test_parse_account_response_rejects_wrong_types() {
-        // Wrong JSON types must fail, never silently default to 0.
         for bad in [
             serde_json::json!({ "balance": "100", "nonce": 0 }),
             serde_json::json!({ "balance": 100, "nonce": "0" }),

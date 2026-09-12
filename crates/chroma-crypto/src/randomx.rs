@@ -279,7 +279,6 @@ where
 {
     let epoch = epoch_for_height(height, RANDOMX_EPOCH_LENGTH);
 
-    // Compute the seed for this epoch (before taking any locks)
     let seed = compute_seed_for_epoch(epoch, get_block_hash);
 
     {
@@ -297,13 +296,10 @@ where
             if *mirror == Some(*seed.as_bytes()) {
                 return Ok(false);
             }
-            // Epoch matches but seed differs: fall through to re-initialize.
         }
 
-        // Initialize the context with the new seed
         init_randomx_context(&seed)?;
 
-        // Update the tracked epoch
         *epoch_guard = Some(epoch);
     }
 
@@ -430,7 +426,6 @@ mod tests {
                     String::from_utf8_lossy(key),
                     flags
                 );
-                // Deterministic repeatability on the same VM.
                 let again = vm.calculate_hash(input).expect("canonical hash");
                 assert_eq!(hash, again, "canonical RandomX must be deterministic");
             }
@@ -471,18 +466,15 @@ mod tests {
         assert_eq!(epoch_for_height(999, RANDOMX_EPOCH_LENGTH), 0);
         assert_eq!(epoch_for_height(1000, RANDOMX_EPOCH_LENGTH), 1);
         assert_eq!(epoch_for_height(2000, RANDOMX_EPOCH_LENGTH), 2);
-        // Last block before the seed transition still uses the old epoch.
         assert_eq!(
             compute_seed_for_epoch(0, |_| None),
             blake3(chroma_core::constants::GENESIS_RANDOMX_SEED)
         );
-        // Epoch 2 with the seed block known: H(block @1900) via derive_seed.
         let bh = Hash::from_bytes([0x77u8; 32]);
         assert_eq!(
             compute_seed_for_epoch(2, |h| if h == 1900 { Some(bh) } else { None }),
             derive_seed(&bh)
         );
-        // Epoch 2 without the seed block: genesis fallback (syncing node).
         assert_eq!(
             compute_seed_for_epoch(2, |_| None),
             blake3(chroma_core::constants::GENESIS_RANDOMX_SEED)
@@ -599,14 +591,12 @@ mod tests {
     fn test_derive_seed() {
         let block_hash = Hash::from_bytes([0xABu8; 32]);
         let seed = derive_seed(&block_hash);
-        // seed should be blake3(block_hash), not the block_hash itself
         assert_ne!(seed, block_hash, "derive_seed should hash the input");
         let expected = blake3(block_hash.as_bytes());
         assert_eq!(
             seed, expected,
             "derive_seed should return blake3(block_hash)"
         );
-        // Deterministic
         let seed2 = derive_seed(&block_hash);
         assert_eq!(seed, seed2, "derive_seed should be deterministic");
     }
@@ -774,7 +764,6 @@ mod tests {
         let r1 = init_randomx_context(&seed_a);
         assert!(r1.is_ok());
 
-        // Re-init with same seed should be idempotent (no 2 GB re-allocation)
         let r1_again = init_randomx_context(&seed_a);
         assert!(r1_again.is_ok());
         assert!(
@@ -782,12 +771,10 @@ mod tests {
             "re-init with same seed should return false"
         );
 
-        // Re-init with different seed should succeed
         let r2 = init_randomx_context(&seed_b);
         assert!(r2.is_ok());
         assert!(r2.unwrap(), "different seed should return true");
 
-        // Re-init with seed_a again should succeed (different from current)
         let r1_return = init_randomx_context(&seed_a);
         assert!(r1_return.is_ok());
         assert!(r1_return.unwrap(), "switching back should return true");
@@ -827,7 +814,6 @@ mod tests {
         let h2 = pow_randomx(&prev, &merkle, 42, b"extra").unwrap();
         assert_eq!(h1, h2, "RandomX should be deterministic for same inputs");
 
-        // Re-init same seed should be idempotent
         let reinit = init_randomx_context(&test_seed());
         assert!(reinit.is_ok());
         assert!(
@@ -835,7 +821,6 @@ mod tests {
             "re-init with same seed should return false"
         );
 
-        // After idempotent re-init, result must still be the same
         let h3 = pow_randomx(&prev, &merkle, 42, b"extra").unwrap();
         assert_eq!(h1, h3, "deterministic after idempotent re-init");
     }
@@ -880,7 +865,6 @@ mod tests {
         );
         assert!(is_randomx_initialized());
 
-        // Second call at same epoch should return false (no re-init)
         let result2 = ensure_randomx_for_height(500, |_| None);
         assert!(result2.is_ok());
         assert!(!result2.unwrap(), "should not re-init for same epoch");

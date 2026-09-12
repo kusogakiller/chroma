@@ -5348,3 +5348,66 @@ async fn e2e_noise_reconnect_same_identity() {
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
 }
+
+/// Unlinked header batches are refused WITHOUT scoring: at header layer a
+/// batch whose parent is unknown is ambiguous (honest fork ahead, our view
+/// stale, or confused peer) — never positive evidence of Byzantine behavior.
+/// Regression pin for the fail-open scoring doctrine: three unlinked batches
+/// would ban under a -100 rule, so steady score 0 proves the exemption.
+#[tokio::test]
+async fn e2e_unlinked_header_batch_not_scored() {
+    init_randomx_for_test();
+    let port_a = next_port();
+    let dir_a = test_dir("unlinked_a");
+    let addr_a: SocketAddr = format!("127.0.0.1:{}", port_a).parse().unwrap();
+
+    let config_a = make_node_config(port_a, dir_a.clone(), vec![]);
+    let mut node_a = Node::new(config_a);
+    node_a.run().await.unwrap();
+
+    let key = chroma_crypto::noise::generate_static_key();
+    let mut evil = noise_test_connect(addr_a, &key).await;
+    evil.app_handshake(NOISE_REGTEST_MAGIC).await;
+    let evil_addr = evil.local_addr;
+
+    // Three decodable-but-unlinked header batches (unknown parents).
+    for i in 0..3u64 {
+        let header = BlockHeader {
+            version: 1,
+            previous_hash: Hash::blake3(format!("nope-{i}").as_bytes()),
+            state_root: Hash::ZERO,
+            tx_merkle_root: Hash::ZERO,
+            timestamp: 1_700_000_000 + i,
+            bits: easy_bits(),
+            height: BlockHeight(5000 + i as u32),
+            nonce: 0,
+        };
+        let mut payload = (1u32).to_le_bytes().to_vec();
+        payload.extend_from_slice(&header.encode());
+        let msg = Message::with_magic(MessageType::Headers, payload, NOISE_REGTEST_MAGIC);
+        evil.writer.send(&msg.encode()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // Observation window: scoring is synchronous per message, so any penalty
+    // would already be applied; the peer must remain unscored, unbanned, and
+    // connected throughout.
+    for _ in 0..10 {
+        {
+            let pm = node_a.peer_manager().read().await;
+            let p = pm.get_peer(&evil_addr).expect("peer entry must be retained");
+            assert_eq!(p.score, 0, "unlinked batch must not be scored");
+            assert!(!p.is_banned(), "unlinked batch must never ban");
+        }
+        assert_eq!(node_a.peer_manager().read().await.ip_ban_count(), 0);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(
+        node_a.peer_manager().read().await.connected_count(),
+        1,
+        "unlinked sender must stay connected"
+    );
+
+    node_a.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+}

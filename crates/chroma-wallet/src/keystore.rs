@@ -155,12 +155,10 @@ pub fn save_keystore(path: &Path, entry: &KeystoreEntry) -> Result<()> {
     std::fs::write(path, &json)
         .map_err(|e| CoreError::InvalidSignature(format!("failed to write keystore: {}", e)))?;
 
-    // Set restrictive file permissions on Unix systems (0600 = owner read/write only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-            // Non-fatal: warn but don't fail
             tracing::warn!("Failed to set keystore file permissions: {}", e);
         }
     }
@@ -205,9 +203,7 @@ impl Wallet {
     ) -> Result<()> {
         let entry = load_keystore(path)?;
         let key_bytes = decrypt_key(old_password, &entry)?;
-        // Verify old password is correct by checking key matches
         let result = self.save(path, new_password);
-        // Zeroize the key bytes
         use zeroize::Zeroize;
         let mut key = key_bytes;
         key.zeroize();

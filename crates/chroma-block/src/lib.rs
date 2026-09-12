@@ -374,14 +374,12 @@ pub fn validate_block(
         )));
     }
 
-    // Nonce for coinbase must be 0
     if coinbase.nonce.0 != 0 {
         return Err(CoreError::InvalidBlock(
             "coinbase nonce must be 0".to_string(),
         ));
     }
 
-    // Coinbase must have zeroed sender_pubkey and signature (no real sender)
     if coinbase.sender_pubkey.0 != [0u8; 32] {
         return Err(CoreError::InvalidBlock(
             "coinbase must have zero sender_pubkey".to_string(),
@@ -396,7 +394,6 @@ pub fn validate_block(
     // --- Apply state transitions ---
     state.begin_block();
 
-    // Apply coinbase subsidy
     let _subsidy = match state.apply_subsidy(&coinbase.recipient, header.height.0) {
         Ok(s) => s,
         Err(e) => {
@@ -415,9 +412,7 @@ pub fn validate_block(
         )));
     }
 
-    // Apply remaining transactions
     for tx in block.transactions.iter().skip(1) {
-        // Transaction size check
         if tx.encode().len() > chroma_core::constants::MAX_TRANSACTION_SIZE {
             state.abort_block();
             return Err(CoreError::TransactionSizeExceeded(
@@ -426,7 +421,6 @@ pub fn validate_block(
             ));
         }
 
-        // Verify signature
         if !tx.verify_signature(ctx.network_magic) {
             state.abort_block();
             return Err(CoreError::InvalidSignature(
@@ -434,7 +428,6 @@ pub fn validate_block(
             ));
         }
 
-        // Apply to state
         if let Err(e) =
             state.apply_transaction(&tx.sender_address(), &tx.recipient, tx.amount.0, tx.nonce.0)
         {
@@ -525,7 +518,6 @@ mod tests {
 
     #[test]
     fn test_merkle_root_deterministic() {
-        // Create a minimal valid transaction for testing
         let secret = chroma_crypto::schnorr::SecretKey32::from_bytes([0xAA; 32]).unwrap();
         let pubkey = chroma_crypto::schnorr::PublicKey32::from_secret(&secret).unwrap();
         let sender_h = chroma_crypto::hash::hash160(&pubkey.0);
@@ -567,9 +559,6 @@ mod tests {
             header,
             transactions: vec![],
         };
-        // The block itself should be valid (no txs, small size).
-        // But the ctx checks that there's at least 1 tx.
-        // This test just verifies encoding doesn't panic.
         let encoded = block.encode_block();
         assert!(encoded.len() < MAX_BLOCK_SIZE);
     }
@@ -657,7 +646,6 @@ mod tests {
     fn test_block_decode_rejects_truncated_header() {
         let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
         let encoded = header.encode();
-        // Truncate to 50 bytes (less than SERIALIZED_SIZE)
         assert!(Block::decode_block(&encoded[..50]).is_err());
     }
 

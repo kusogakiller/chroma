@@ -414,7 +414,6 @@ impl Node {
                     .get(&persisted_tip.height)
                     .cloned()
                     .unwrap_or_else(|| {
-                        // Use network-appropriate genesis as fallback
                         let genesis = if network.regtest {
                             chroma_consensus::build_genesis_for_network(
                                 &chroma_consensus::NetworkKind::Regtest,
@@ -1275,7 +1274,6 @@ impl Node {
             }
         };
 
-        // Handshake complete
         {
             let mut pm = peer_manager.write().await;
             pm.clear_connect_failures(&addr);
@@ -1320,7 +1318,6 @@ impl Node {
             }
         }
 
-        // Main message loop
         let mut main_buf = Vec::with_capacity(65536);
         Self::message_loop(
             read_half,
@@ -1417,7 +1414,6 @@ impl Node {
             };
             match hs {
                 None => {
-                    // Shutdown during Noise handshake: quiet teardown.
                     Self::cleanup_connection(&peer_manager, &syncer, &event_tx, addr).await;
                     return Ok(());
                 }
@@ -1565,7 +1561,6 @@ impl Node {
                     return Err(P2pError::Protocol("peer banned".into()));
                 }
             }
-            // Check for sync timeout before reading
             {
                 let s = syncer.read().await;
                 if s.is_syncing() && s.is_sync_timed_out() {
@@ -1608,7 +1603,6 @@ impl Node {
                     return Err(P2pError::Protocol("idle timeout: no frames".into()));
                 }
                 Ok(Ok((msg_type, payload))) => {
-                    // Rate limit check
                     {
                         let mut pm = peer_manager.write().await;
                         if let Some(peer) = pm.get_peer_mut(&addr) {
@@ -1650,7 +1644,6 @@ impl Node {
                             let mut headers_buf = Vec::new();
                             let mut count = 0u32;
 
-                            // Find the start height from the requested start_hash
                             let start_height = if getheaders.start_hash != Hash::ZERO {
                                 // Use the syncer's locator lookup for better accuracy
                                 let s = syncer.read().await;
@@ -1667,7 +1660,6 @@ impl Node {
                                 0
                             };
 
-                            // Send up to MAX_HEADERS_PER_RESPONSE headers starting after start_height
                             for h in (start_height + 1)..=(start_height + 2000).min(tip_height) {
                                 if let Ok(Some(header)) = storage.get_header(h) {
                                     let encoded = header.encode();
@@ -1809,7 +1801,6 @@ impl Node {
                             for entry in inv.inventory.iter().take(crate::wire::MAX_INV_FOLLOW) {
                                 match entry.inv_type {
                                     InvType::Block => {
-                                        // Check if we have this block
                                         let have = storage
                                             .get_block_by_hash(&entry.hash)
                                             .ok()
@@ -1936,7 +1927,6 @@ impl Node {
                                     let block_hash = block.hash();
                                     let block_height = block.header.height.0;
 
-                                    // Capture old tip before apply for reorg detection
                                     let (old_tip_height, old_tip_hash) = {
                                         let cs = chain_state.read().await;
                                         cs.tip_info()
@@ -1948,7 +1938,6 @@ impl Node {
                                             "block validation failed: {}",
                                             e
                                         )));
-                                        // Record sync failure for invalid blocks
                                         drop(cs);
                                         let mut s = syncer.write().await;
                                         s.record_sync_failure();
@@ -2010,7 +1999,6 @@ impl Node {
                                             });
                                         }
 
-                                        // Clean mined transactions from mempool
                                         {
                                             let mut mp = mempool.write().await;
                                             for tx in &block.transactions {
@@ -2020,7 +2008,6 @@ impl Node {
                                             }
                                         }
 
-                                        // Update syncer and request next block if syncing
                                         {
                                             let mut s = syncer.write().await;
                                             s.received_block(block_hash, block_height);
@@ -2072,11 +2059,9 @@ impl Node {
                                         "block decode failed from {}: {}",
                                         addr, e
                                     )));
-                                    // Record sync failure for corrupt blocks
                                     let mut s = syncer.write().await;
                                     s.record_sync_failure();
                                     drop(s);
-                                    // Undecodable block bytes: malformed.
                                     peer_manager
                                         .write()
                                         .await
@@ -2088,7 +2073,6 @@ impl Node {
                             let tx = chroma_tx::Transaction::decode(&payload);
                             match tx {
                                 Ok(tx) => {
-                                    // Check transaction rate limit
                                     {
                                         let mut pm = peer_manager.write().await;
                                         if let Some(peer) = pm.get_peer_mut(&addr) {
@@ -2103,7 +2087,6 @@ impl Node {
                                         }
                                     }
 
-                                    // Validate signature before adding to mempool
                                     if let Err(e) =
                                         Mempool::validate_transaction(&tx, network.magic)
                                     {
@@ -2138,13 +2121,11 @@ impl Node {
                                     let tx_hash = Hash::blake3(&encoded);
                                     let _ = event_tx.send(NodeEvent::TxReceived(tx_hash));
 
-                                    // Add to local mempool
                                     {
                                         let mut mp = mempool.write().await;
                                         let _ = mp.add_transaction(tx, network.magic);
                                     }
 
-                                    // Relay to other peers
                                     let inv_entry = InvEntry {
                                         inv_type: InvType::Tx,
                                         hash: tx_hash,
@@ -2164,7 +2145,6 @@ impl Node {
                                         "tx decode failed from {}: {}",
                                         addr, e
                                     )));
-                                    // Undecodable 132-byte payload: malformed.
                                     peer_manager
                                         .write()
                                         .await
@@ -2271,13 +2251,11 @@ impl Node {
         // Initial delay so startup dials (sent by run()) settle first.
         tokio::time::sleep(std::time::Duration::from_secs(RECONNECT_TICK_SECS)).await;
         loop {
-            // Small jitter so restarted nodes do not dial in lockstep.
             let jitter = rand_u64() % 5;
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(
                     RECONNECT_TICK_SECS + jitter,
                 )) => {
-                    // Snapshot candidates without holding the lock across I/O.
                     // Reap dead entries first so failed-dial records do not
                     // accumulate (backoff history lives in a separate map
                     // and survives pruning; live bans are kept).
@@ -2451,7 +2429,6 @@ impl Node {
                                     chain_height.store(height, Ordering::Relaxed);
                                     let _ = event_tx.send(NodeEvent::BlockMined(block_hash, height));
 
-                                    // Broadcast block to peers
                                     let inv_entry = InvEntry {
                                         inv_type: InvType::Block,
                                         hash: block_hash,
@@ -2462,7 +2439,6 @@ impl Node {
                                     );
                                     Self::broadcast_to_peers(&peer_manager, inv_msg, network.magic).await;
 
-                                    // Remove mined txs from mempool
                                     let mut mp = mempool.write().await;
                                     for tx in &block.transactions {
                                         let encoded = tx.encode();
@@ -2530,7 +2506,6 @@ impl Node {
                     return;
                 }
 
-                // Split into batches of MAX_BLOCKS_PER_REQUEST
                 for chunk in hashes.chunks(sync::MAX_BLOCKS_PER_REQUEST) {
                     let entries: Vec<InvEntry> = chunk
                         .iter()

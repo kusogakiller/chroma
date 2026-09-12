@@ -121,7 +121,6 @@ impl State {
     /// Begin a new block — creates a fresh journal and snapshots supply.
     pub fn begin_block(&mut self) {
         self.journal = BlockJournal::new();
-        // Snapshot supply BEFORE any changes in this block
         self.supply_snapshots.push(self.total_supply);
     }
 
@@ -130,7 +129,6 @@ impl State {
     pub fn commit_block(&mut self) {
         let journal = std::mem::take(&mut self.journal);
         self.rollbacks.push(journal);
-        // Enforce depth limit
         let max = chroma_core::constants::REORG_JOURNAL_DEPTH as usize;
         while self.rollbacks.len() > max {
             self.rollbacks.drain(..1);
@@ -279,14 +277,12 @@ impl State {
         amount: u64,
         nonce: u64,
     ) -> Result<()> {
-        // amount > 0
         if amount == 0 {
             return Err(CoreError::InvalidTransaction(
                 "amount must be greater than zero".to_string(),
             ));
         }
 
-        // sender != recipient
         if sender == recipient {
             return Err(CoreError::InvalidTransaction(
                 "sender and recipient must differ".to_string(),
@@ -295,7 +291,6 @@ impl State {
 
         let mut sender_account = self.get_account(sender);
 
-        // Nonce check: must equal expected nonce
         if nonce != sender_account.nonce {
             return Err(CoreError::InvalidNonce(format!(
                 "expected nonce {}, got {}",
@@ -303,7 +298,6 @@ impl State {
             )));
         }
 
-        // Balance check: sender must have enough
         let new_sender_balance = sender_account.balance.checked_sub(amount).ok_or_else(|| {
             CoreError::InsufficientBalance(format!(
                 "account has {} units, tried to send {}",
@@ -311,7 +305,6 @@ impl State {
             ))
         })?;
 
-        // Update sender
         sender_account.balance = new_sender_balance;
         sender_account.nonce = sender_account
             .nonce
@@ -319,7 +312,6 @@ impl State {
             .ok_or_else(|| CoreError::Overflow("nonce overflow".into()))?;
         self.set_account(sender, sender_account);
 
-        // Update recipient (create if needed)
         let mut recipient_account = self.get_account(recipient);
         recipient_account.balance =
             recipient_account
@@ -399,14 +391,12 @@ pub fn sorted_merkle_root(leaves: &[Hash]) -> Hash {
         let mut i = 0;
         while i < current.len() {
             if i + 1 < current.len() {
-                // Hash pair
                 let mut data = Vec::with_capacity(64);
                 data.extend_from_slice(current[i].as_bytes());
                 data.extend_from_slice(current[i + 1].as_bytes());
                 next.push(Hash::blake3(&data));
                 i += 2;
             } else {
-                // Odd leaf — promote to next level
                 next.push(current[i]);
                 i += 1;
             }
@@ -584,13 +574,11 @@ mod tests {
             .apply_transaction(&alice_addr, &bob_addr, 1_000_000, 0)
             .unwrap();
 
-        // Replay with nonce=0 must fail
         let err = state
             .apply_transaction(&alice_addr, &bob_addr, 1_000_000, 0)
             .unwrap_err();
         assert!(matches!(err, CoreError::InvalidNonce(_)));
 
-        // Must use nonce=1 now
         state
             .apply_transaction(&alice_addr, &bob_addr, 1_000_000, 1)
             .unwrap();
@@ -650,7 +638,6 @@ mod tests {
 
     #[test]
     fn test_state_root_ordering() {
-        // State root must be deterministic regardless of insertion order
         let mut state1 = State::new();
         let mut state2 = State::new();
         let alice_addr = alice();
@@ -694,7 +681,6 @@ mod tests {
         let bob_addr = bob();
         fund_account(&mut state, &alice_addr, 10_000_000);
 
-        // Skip nonce 0, try nonce 1
         let err = state
             .apply_transaction(&alice_addr, &bob_addr, 100_000, 1)
             .unwrap_err();
@@ -736,7 +722,6 @@ mod tests {
     #[test]
     fn test_subsidy_at_various_heights() {
         let state = State::new();
-        // Subsidy should be constant regardless of height (until cap)
         for h in [0, 1, 100, 999999, u32::MAX] {
             assert_eq!(
                 state.block_subsidy(h).unwrap(),
@@ -785,7 +770,6 @@ mod tests {
         }
         let root = state.compute_state_root();
         assert_ne!(root, Hash::ZERO);
-        // Same state → same root
         assert_eq!(root, state.compute_state_root());
     }
 
@@ -842,11 +826,9 @@ mod tests {
 
     #[test]
     fn test_merkle_odd_count_promotes_last() {
-        // 3 leaves: [a, b, c] → level1 = [H(a,b), c] → root = H(H(a,b), c)
         let leaves: Vec<Hash> = (0..3).map(|i| Hash::blake3(&[i])).collect();
         let root = sorted_merkle_root(&leaves);
         assert_ne!(root, Hash::ZERO);
-        // Should not be the same as a 2-leaf or 4-leaf tree with same prefix
         let root2 = sorted_merkle_root(&leaves[..2]);
         assert_ne!(root, root2);
     }
@@ -860,7 +842,6 @@ mod tests {
 
     #[test]
     fn test_state_root_uses_merkle() {
-        // Verify that state root now uses per-leaf hashing (different from flat hash)
         let mut state = State::new();
         let alice_addr = alice();
         let bob_addr = bob();
@@ -870,8 +851,6 @@ mod tests {
         let root = state.compute_state_root();
         assert_ne!(root, Hash::ZERO);
 
-        // Flat hash would be BLAKE3(addr_alice || acc_alice || addr_bob || acc_bob)
-        // Merkle tree should produce a different result
         let mut flat_buf = Vec::new();
         for (addr, acc) in &state.accounts {
             flat_buf.extend_from_slice(addr);
@@ -901,15 +880,12 @@ mod tests {
             .unwrap();
         state.commit_block();
 
-        // State changed
         assert_eq!(state.get_account(&alice_addr).balance, 9_000_000);
         assert_eq!(state.get_account(&bob_addr).balance, 1_000_000);
 
-        // Rollback
         let rolled = state.rollback_block();
         assert!(rolled);
 
-        // State restored
         assert_eq!(state.get_account(&alice_addr).balance, 10_000_000);
         assert_eq!(state.get_account(&bob_addr).balance, 0);
         assert_eq!(state.total_supply(), supply_before);
@@ -929,12 +905,10 @@ mod tests {
             .unwrap();
         state.commit_block();
 
-        // Bob was created
         assert_eq!(state.get_account(&bob_addr).balance, 500_000);
 
         state.rollback_block();
 
-        // Bob should be gone (reverted to default)
         assert_eq!(state.get_account(&bob_addr).balance, 0);
         assert_eq!(state.get_account(&bob_addr).nonce, 0);
     }

@@ -1,52 +1,52 @@
-# Chroma Phase 1 & 2 Security Audit Report
+# Chroma Phase 1 & 2 セキュリティ監査報告
 
-**Date:** 2026-09-06  
-**Scope:** Phase 1 (Wallet Keystore) + Phase 2 (JSON-RPC Server)  
-**Auditor:** Adversarial review of implementation code
+**日付:** 2026-09-06
+**範囲:** Phase 1 (Wallet Keystore) + Phase 2 (JSON-RPC Server)
+**監査:** 実装コードのadversarial review
 
 ---
 
 ## A. Keystore: KDF (Argon2id)
 
-**Location:** `crates/chroma-wallet/src/keystore.rs:50-60`
+**場所:** `crates/chroma-wallet/src/keystore.rs:50-60`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| Argon2id with m=65536 (64MB), t=3, p=4 is a reasonable choice | OK | — |
-| `derive_key` panics with `.expect("argon2 hash failed")` on OOM | LOW | Acceptable for testnet; production should propagate error |
-| No memory limit enforcement for Argon2 allocator | INFO | Standard Rust Argon2 crate uses jemalloc/stdlib; acceptable |
+| Argon2idでm=65536 (64MB)、t=3、p=4は妥当な選択 | OK | — |
+| `derive_key`がOOM時に`.expect("argon2 hash failed")`でpanicする | LOW | testnetは許容。本番はerrorを返すべき |
+| Argon2 allocatorのメモリ上限なし | INFO | 標準Rust Argon2 crateはjemalloc/stdlib。許容 |
 
-**Verdict:** KDF parameters are adequate. Consider raising `m` to 131072 (128MB) for mainnet if latency budget allows. The panic on failure is acceptable since a failed derivation is a fatal error.
+**結論:** KDFパラメータは十分です。latency budgetが許せばmainnet用に`m`を131072 (128MB)に上げてもいいです。失敗時のpanicは許容します。derivation失敗はfatal errorなので。
 
 ---
 
-## B. Keystore: AES-256-GCM Encryption
+## B. Keystore: AES-256-GCM暗号化
 
-**Location:** `crates/chroma-wallet/src/keystore.rs:69-111`
+**場所:** `crates/chroma-wallet/src/keystore.rs:69-111`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| AES-256-GCM with random 12-byte nonce per encryption | OK | — |
-| Nonce generated via `rand::thread_rng()` (CSPRNG) | OK | — |
-| Encryption failure handled with `.expect("encryption failed")` | INFO | Acceptable; encryption failure = memory corruption |
+| AES-256-GCM、暗号化ごとにrandom 12-byte nonce | OK | — |
+| Nonceは`rand::thread_rng()` (CSPRNG)で作る | OK | — |
+| 暗号化失敗は`.expect("encryption failed")`で扱う | INFO | 許容。暗号化失敗＝メモリ破壊だから |
 
-**Verdict:** Encryption is sound. Random nonces ensure uniqueness. No issues found.
+**結論:** 暗号化は健全です。random nonceで一意です。問題ありません。
 
 ---
 
-## C. Keystore: MAC Verification
+## C. Keystore: MAC検証
 
-**Location:** `crates/chroma-wallet/src/keystore.rs:62-67, 125-129`
+**場所:** `crates/chroma-wallet/src/keystore.rs:62-67, 125-129`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
 | MAC = Blake3(ciphertext ‖ derived_key) | OK | — |
-| MAC comparison uses `!=` on `[u8]` slices (NOT constant-time) | MEDIUM | Should use `subtle::ConstantTimeEq` |
-| Derived key is reused for MAC and encryption (dual-use) | INFO | Acceptable per standard practice; AEAD already provides integrity |
+| MAC比較が`[u8]` sliceの`!=` (constant-timeではない) | MEDIUM | `subtle::ConstantTimeEq`を使うべき |
+| 導出鍵をMACと暗号化で兼用 (dual-use) | INFO | 標準通りで許容。AEADがintegrityを持っている |
 
-**Attack scenario:** A local attacker with access to the keystore file could theoretically measure MAC comparison timing to confirm password correctness. In practice, Argon2id derivation (~50-200ms) dominates timing, making this attack unrealistic. However, defense-in-depth recommends constant-time comparison.
+**攻撃シナリオ:** keystore fileに触れるローカル攻撃者が、MAC比較タイミングを測ってpassword正誤を当てる手があります。実際はArgon2id derivation (~50-200ms)が支配的なので非現実的です。でもdefense-in-depthでconstant-time比較がいいです。
 
-**Recommendation:** Add `subtle` crate dependency, use `ConstantTimeEq`:
+**推奨:** `subtle` crateを入れて`ConstantTimeEq`を使う:
 ```rust
 use subtle::ConstantTimeEq;
 if computed_mac.ct_eq(&expected_mac).into() { ... }
@@ -54,62 +54,62 @@ if computed_mac.ct_eq(&expected_mac).into() { ... }
 
 ---
 
-## D. Keystore: File Format & Serialization
+## D. Keystore: ファイル形式とシリアライズ
 
-**Location:** `crates/chroma-wallet/src/keystore.rs:19-48, 149-162`
+**場所:** `crates/chroma-wallet/src/keystore.rs:19-48, 149-162`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| Keystore format: JSON with v1 version field | OK | — |
-| `save_keystore` uses `serde_json::to_string_pretty` | INFO | Human-readable, acceptable |
-| `save_keystore` does NOT set file permissions (creates 0644) | HIGH | World-readable on Linux/macOS |
-| No atomic write (crash during write = corrupted file) | MEDIUM | Should use temp file + rename |
-| Keystore file contains plaintext address and hash160 | INFO | Expected; address is public |
+| Keystore形式: v1 version fieldつきJSON | OK | — |
+| `save_keystore`は`serde_json::to_string_pretty`を使う | INFO | 人間可読で許容 |
+| `save_keystore`がfile permissionを設定しない (0644で作る) | HIGH | Linux/macOSでworld-readable |
+| atomic writeなし (書き込み中crash＝壊れfile) | MEDIUM | temp file＋renameにすべき |
+| Keystore fileに平文addressとhash160が入る | INFO | 想定通り。addressはpublicだから |
 
-**Attack scenario (HIGH):** On a shared Linux system, `wallet create` creates `wallets/<name>.json` with default umask permissions (typically 0644). Any local user can read the file. While the key is encrypted, an attacker can offline-brute-force weak passwords.
+**攻撃シナリオ (HIGH):** 共有Linuxで`wallet create`が`wallets/<name>.json`を既定umask (大体0644)で作ります。全ローカルユーザーが読めます。鍵は暗号化されていますが、弱いpasswordならoffline brute-forceされます。
 
-**Recommendations:**
-1. Set file permissions to 0600 after creation: `std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))`
-2. Use atomic write: write to `.tmp` file, then rename.
+**推奨:**
+1. 作った後に0600にする: `std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))`
+2. atomic write: `.tmp`に書いてからrenameする。
 
 ---
 
-## E. Keystore: Memory Security
+## E. Keystore: メモリセキュリティ
 
-**Location:** `crates/chroma-wallet/src/keystore.rs:113-147`, `crates/chroma-wallet/src/lib.rs:128-131`
+**場所:** `crates/chroma-wallet/src/keystore.rs:113-147`、`crates/chroma-wallet/src/lib.rs:128-131`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| `Wallet::drop` calls `secret_key.0.zeroize()` | OK | — |
-| `decrypt_key` returns `[u8; 32]` — caller must zeroize | MEDIUM | `key_bytes` in `change_password` is zeroed via `_key_bytes` binding but Drop may not trigger |
-| `derive_key` local `key` array not explicitly zeroized | LOW | Stack-allocated; drops on scope exit but compiler may optimize out zeroing |
-| `encrypt_key` receives `&[u8; 32]` secret — not zeroized after use | MEDIUM | Caller responsibility, but no guidance |
+| `Wallet::drop`が`secret_key.0.zeroize()`を呼ぶ | OK | — |
+| `decrypt_key`は`[u8; 32]`を返す — 呼び出し側がzeroize必須 | MEDIUM | `change_password`の`key_bytes`は`_key_bytes` bindでzeroizeするがDropが動くか不明 |
+| `derive_key`のローカル`key`配列を明示zeroizeしない | LOW | スタック確保。scope exitで落ちるがzeroingが最適化で消えるかも |
+| `encrypt_key`は`&[u8; 32]` secret受取 — 使用後zeroizeしない | MEDIUM | 呼び出し側責任だが指針なし |
 
-**Attack scenario (MEDIUM):** After `decrypt_key` returns, the plaintext key remains in process memory until the stack frame is overwritten. If the process is dumped (e.g., core dump, /proc/mem), the key is exposed.
+**攻撃シナリオ (MEDIUM):** `decrypt_key`が返った後、平文鍵がstack frame上書きまでプロセスメモリに残ります。process dump (core dump、/proc/memなど)で漏れます。
 
-**Recommendation:**
-1. Add `zeroize` to the return of `decrypt_key` via a wrapper type.
-2. In `change_password`, ensure `_key_bytes` is explicitly zeroized (Rust doesn't guarantee Drop for `[u8; 32]`).
-3. Consider `zeroize::Zeroizing<[u8; 32]>` as return type.
+**推奨:**
+1. `decrypt_key`の戻りにwrapper typeで`zeroize`をつける。
+2. `change_password`で`_key_bytes`を明示zeroizeする (`[u8; 32]`のDropはRustが保証しない)。
+3. 戻り型に`zeroize::Zeroizing<[u8; 32]>`を検討する。
 
 ---
 
-## F. CLI Security
+## F. CLIセキュリティ
 
-**Location:** `crates/chroma-cli/src/main.rs:297-377`
+**場所:** `crates/chroma-cli/src/main.rs:297-377`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| `wallet create` uses `rpassword` for hidden input | OK | — |
-| `wallet export` requires `yes` confirmation before displaying key | OK | — |
-| `wallet export` prints key to stdout via `println!` | MEDIUM | Visible in terminal scrollback, shell history if piped |
-| `wallet import --key` accepts hex key via CLI arg | HIGH | Visible in `/proc/<pid>/cmdline`, shell history, `ps` output |
-| Password comparison `password != confirm` not constant-time | INFO | Acceptable; not security-critical |
-| No timeout on password prompts | INFO | Acceptable for CLI |
+| `wallet create`は隠し入力に`rpassword`を使う | OK | — |
+| `wallet export`は`yes`確認がないと鍵を出さない | OK | — |
+| `wallet export`は鍵を`println!`でstdoutに出す | MEDIUM | terminal scrollbackに見える。pipeすればshell historyにも |
+| `wallet import --key`はhex鍵をCLI argで受ける | HIGH | `/proc/<pid>/cmdline`、shell history、`ps`に見える |
+| password比較`password != confirm`がconstant-timeでない | INFO | 許容。security-criticalではない |
+| password promptにtimeoutなし | INFO | CLIなので許容 |
 
-**Attack scenario (HIGH):** `chroma wallet import --name my --key <hex>` stores the private key in the process command line, visible to all local users via `ps aux` or `/proc/*/cmdline`. Shell history also retains it.
+**攻撃シナリオ (HIGH):** `chroma wallet import --name my --key <hex>`は秘密鍵をprocess command lineに載せます。全ローカルユーザーが`ps aux`や`/proc/*/cmdline`で見えます。shell historyにも残ります。
 
-**Recommendation:** Remove `--key` CLI arg option. Require `--key` to be provided via stdin or file:
+**推奨:** `--key` CLI argを消す。stdinかfileで渡す:
 ```
 echo "abcdef1234..." | chroma wallet import --name my --key-stdin
 chroma wallet import --name my --key-file /path/to/key.txt
@@ -117,133 +117,133 @@ chroma wallet import --name my --key-file /path/to/key.txt
 
 ---
 
-## G. RPC: Binding & Authentication
+## G. RPC: Bindと認証
 
-**Location:** `crates/chroma-rpc/src/lib.rs:32-53`, `crates/chroma-rpc/src/auth.rs`
-
-| Finding | Severity | Status |
-|---------|----------|--------|
-| RPC binds to `SocketAddr` (configurable, defaults to 127.0.0.1) | OK | — |
-| API key auth via `X-API-Key` header | OK | — |
-| API key comparison uses `==` (NOT constant-time) | HIGH | Timing side-channel |
-| No API key = open access (no auth required) | HIGH | Critical if exposed to network |
-| CORS layer is `CorsLayer::permissive()` (allows all origins) | MEDIUM | Browser-based attacks possible |
-| No rate limiting per-IP or global | MEDIUM | DoS vector |
-| No connection limit | LOW | DoS vector |
-| Double auth check in `lib.rs:69-74` AND `handler.rs:18-23` | INFO | Redundant but not harmful |
-
-**Attack scenarios:**
-
-1. **Timing attack (HIGH):** `auth.rs:13` uses `provided == key`. An attacker can measure response times across many requests to guess the API key byte-by-byte. Argon2 is not in the auth path, so timing is measurable.
-
-2. **Open access (HIGH):** If `--rpc-api-key` is not provided, `state.api_key` is `None`, and `verify_api_key` returns `Ok(())` for any request. If the RPC port is reachable from the network, all endpoints are exposed.
-
-3. **CORS (MEDIUM):** `CorsLayer::permissive()` allows any origin. A malicious webpage could make cross-origin RPC calls to a user's local node.
-
-**Recommendations:**
-1. Use `subtle::ConstantTimeEq` for API key comparison.
-2. If no API key is set, log a warning. Consider requiring API key when binding to non-localhost.
-3. Restrict CORS to localhost origins, or remove CORS layer (RPC is not browser-accessible).
-
----
-
-## H. RPC: Rate Limiting & Concurrency
-
-**Location:** `crates/chroma-rpc/src/lib.rs:39-53`
+**場所:** `crates/chroma-rpc/src/lib.rs:32-53`、`crates/chroma-rpc/src/auth.rs`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| `RequestBodyLimitLayer::new(1024 * 1024)` — 1MB body limit | OK | — |
-| `TimeoutLayer::new(30s)` — 30s request timeout | OK | — |
-| No per-IP rate limiting | HIGH | Amplification/DoS |
-| No global request rate limiting | MEDIUM | DoS |
-| `sendRawTransaction` holds `mempool.write()` for entire validation | MEDIUM | Lock contention, single-transaction bottleneck |
-| `getHeaders` holds `chain_state.read()` for up to 1001 iterations | LOW | Read lock held for potentially long time |
+| RPCは`SocketAddr`にbindする (設定可、既定127.0.0.1) | OK | — |
+| API key認証は`X-API-Key` header | OK | — |
+| API key比較が`==` (constant-timeではない) | HIGH | タイミングside-channel |
+| API keyなし＝open access (認証不要) | HIGH | networkに届くとcritical |
+| CORSが`CorsLayer::permissive()` (全origin許可) | MEDIUM | browser経由攻撃がありうる |
+| per-IP rate limitingなし | MEDIUM | DoS vector |
+| connection limitなし | LOW | DoS vector |
+| `lib.rs:69-74`と`handler.rs:18-23`の二重auth check | INFO | 冗長だが無害 |
 
-**Attack scenarios:**
+**攻撃シナリオ:**
 
-1. **Amplification DoS (HIGH):** An attacker can flood `sendRawTransaction` with valid-looking transactions. Each request acquires a write lock on the mempool, serializing all submissions. Combined with no rate limiting, this can stall the node.
+1. **タイミング攻撃 (HIGH):** `auth.rs:13`が`provided == key`です。たくさん測ってAPI keyをbyteずつ当てられます。auth pathにArgon2はないので測れます。
 
-2. **Memory exhaustion (MEDIUM):** No global request count limit. An attacker can open many concurrent connections, each holding a body buffer up to 1MB.
+2. **Open access (HIGH):** `--rpc-api-key`なしだと`state.api_key`が`None`で、`verify_api_key`は全requestに`Ok(())`を返します。RPC portがnetworkに届くと全endpointが露出します。
 
-**Recommendations:**
-1. Add `tower::limit::ConcurrencyLimitLayer` (e.g., 100 concurrent requests).
-2. Add per-IP rate limiting via `tower::limit::RateLimitLayer` or custom middleware.
-3. Consider adding a `RateLimit` to `sendRawTransaction` specifically (e.g., 10/sec per IP).
+3. **CORS (MEDIUM):** `CorsLayer::permissive()`は全originを許します。悪意webページがユーザーのローカルノードへcross-origin RPCできます。
+
+**推奨:**
+1. API key比較に`subtle::ConstantTimeEq`を使う。
+2. API keyなしは警告を出す。non-localhost bind時はkey必須も検討する。
+3. CORSはlocalhost originに絞るか、CORS layerを取る (RPCはbrowserから使わない)。
 
 ---
 
-## I. RPC: JSON-RPC Correctness & Error Handling
+## H. RPC: Rate Limitingと並行処理
 
-**Location:** `crates/chroma-rpc/src/error.rs`, `crates/chroma-rpc/src/handler.rs`
+**場所:** `crates/chroma-rpc/src/lib.rs:39-53`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| JSON-RPC 2.0 error codes (-32700, -32600, -32601, -32602, -32603) correctly used | OK | — |
-| No batch request support | INFO | Per spec, batch is optional |
-| `jsonrpc` field not validated (accepts any string) | LOW | Should verify "2.0" |
-| `handle_get_block_by_height` casts `u64` to `u32` without range check | LOW | Params from JSON can exceed u32::MAX |
-| `handle_get_block_by_hash` linear scan O(n) over all headers | LOW | Performance issue, not security |
-| Internal error messages exposed to client (e.g., "password incorrect") | MEDIUM | Information leakage |
-| No request ID validation (accepts any JSON value) | INFO | Per spec, ID can be any value |
+| `RequestBodyLimitLayer::new(1024 * 1024)` — body上限1MB | OK | — |
+| `TimeoutLayer::new(30s)` — request timeout 30秒 | OK | — |
+| per-IP rate limitingなし | HIGH | Amplification/DoS |
+| global request rate limitingなし | MEDIUM | DoS |
+| `sendRawTransaction`がvalidation中ずっと`mempool.write()`を持つ | MEDIUM | lock競合。単一tx bottleneck |
+| `getHeaders`が最大1001 iterationsまで`chain_state.read()`を持つ | LOW | read lockが長いことがある |
 
-**Attack scenarios:**
+**攻撃シナリオ:**
 
-1. **Information leakage (MEDIUM):** `sendRawTransaction` returns `e.to_string()` from mempool validation, which includes "transaction signature verification failed" or "mempool full". This reveals internal state.
+1. **Amplification DoS (HIGH):** 攻撃者がそれっぽいtransactionで`sendRawTransaction`をfloodできます。各requestがmempool write lockを取るので全部直列化します。rate limitingと合わさってnodeが止まります。
 
-2. **u32 overflow (LOW):** `params.get("height").as_u64() as u32` silently truncates values > u32::MAX.
+2. **メモリ枯渇 (MEDIUM):** global request数上限なし。たくさん同時接続を開いて、各1MBまでbody bufferを持てます。
 
-**Recommendations:**
-1. Sanitize error messages before returning to client.
-2. Add range check: `if height > u32::MAX as u64 { return Err(...) }`.
+**推奨:**
+1. `tower::limit::ConcurrencyLimitLayer`を入れる (同時100くらい)。
+2. `tower::limit::RateLimitLayer`か自前middlewareでper-IP rate limitを入れる。
+3. `sendRawTransaction`だけの`RateLimit`も検討する (IPごと10/secくらい)。
 
 ---
 
-## J. Transaction Validation (Mempool Integration)
+## I. RPC: JSON-RPC正しさとerror handling
 
-**Location:** `crates/chroma-p2p/src/mempool.rs:41-67`, `crates/chroma-rpc/src/handler.rs:209-233`
+**場所:** `crates/chroma-rpc/src/error.rs`、`crates/chroma-rpc/src/handler.rs`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| Mempool validates: signature, amount > 0, sender ≠ recipient | OK | — |
-| Mempool does NOT validate balance or nonce against chain state | INFO | By design; validation at block inclusion time |
-| `sendRawTransaction` deserializes then re-serializes to compute hash | LOW | Wasteful; could compute hash from raw bytes |
-| No duplicate detection by (sender, nonce) across mempool AND chain | LOW | Could accept tx that's already confirmed |
+| JSON-RPC 2.0 error code (-32700、-32600、-32601、-32602、-32603)を正しく使う | OK | — |
+| batch request非対応 | INFO | specではbatchは任意 |
+| `jsonrpc` fieldを検証しない (何でも受ける) | LOW | "2.0"を見るべき |
+| `handle_get_block_by_height`が`u64`をrange checkなしで`u32`にcastする | LOW | JSONのparamsはu32::MAXを超えられる |
+| `handle_get_block_by_hash`が全headerの線形scan O(n) | LOW | 性能問題。securityではない |
+| 内部error messageをclientに出す (例 "password incorrect") | MEDIUM | 情報漏れ |
+| request ID検証なし (何のJSON値でも受ける) | INFO | specではIDは何でもいい |
 
-**Attack scenario (LOW):** An attacker can submit an already-confirmed transaction via `sendRawTransaction`. It will be accepted into the mempool and only fail at block inclusion. This wastes mempool space.
+**攻撃シナリオ:**
 
-**Recommendation:** Optionally check (sender, nonce) against chain state before accepting into mempool.
+1. **情報漏れ (MEDIUM):** `sendRawTransaction`がmempool validationの`e.to_string()`を返します。"transaction signature verification failed"とか"mempool full"とか内部状態が見えます。
+
+2. **u32 overflow (LOW):** `params.get("height").as_u64() as u32`はu32::MAX超えを黙って切り捨てます。
+
+**推奨:**
+1. clientに返す前にerror messageをsanitizeする。
+2. range checkを入れる: `if height > u32::MAX as u64 { return Err(...) }`。
 
 ---
 
-## K. Wallet ↔ Transaction Integration Readiness
+## J. Transaction Validation (Mempool連携)
+
+**場所:** `crates/chroma-p2p/src/mempool.rs:41-67`、`crates/chroma-rpc/src/handler.rs:209-233`
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| `Wallet::create_transaction` correctly delegates to `chroma_tx::create_transaction` | OK | — |
-| `create_transaction` validates amount > 0, sender ≠ recipient | OK | — |
-| `create_transaction` verifies derived address matches sender | OK | — |
-| No nonce management (caller must provide correct nonce) | INFO | Phase 3 responsibility |
-| `Wallet::secret_bytes()` returns raw `[u8; 32]` — not zeroized after use | MEDIUM | Caller must zeroize |
+| Mempool検証: signature、amount > 0、sender ≠ recipient | OK | — |
+| Mempoolはchain stateに対するbalance/nonceを見ない | INFO | 設計通り。block inclusion時に検証する |
+| `sendRawTransaction`はhash計算のためdeserializeしてre-serializeする | LOW | 無駄。raw bytesからhashできる |
+| mempool AND chainをまたぐ(sender, nonce)重複検出なし | LOW | confirm済みtxを受け入れるかも |
 
-**Phase 3 prerequisites:**
-1. Nonce acquisition from chain state (requires RPC call or local storage access).
-2. Balance check before sending (requires RPC call or local storage access).
-3. `secret_bytes()` return value must be zeroized after use.
+**攻撃シナリオ (LOW):** 攻撃者がconfirm済みtransactionを`sendRawTransaction`で出せます。mempoolに入って、block inclusionで初めて落ちます。mempoolが無駄になります。
+
+**推奨:** mempoolに入れる前に(sender, nonce)をchain stateと照合してもいいです。
 
 ---
 
-## L. Cross-Network Security
+## K. Wallet ↔ Transaction連携の用意
 
 | Finding | Severity | Status |
 |---------|----------|--------|
-| Mainnet, testnet, regtest have distinct network magic bytes | OK | — |
-| Genesis hash pinned per network | OK | — |
-| RPC server does not enforce network context | INFO | Acceptable; same node handles one network |
+| `Wallet::create_transaction`は`chroma_tx::create_transaction`に正しく委譲する | OK | — |
+| `create_transaction`はamount > 0、sender ≠ recipientを見る | OK | — |
+| `create_transaction`は導出addressがsenderと一致するか見る | OK | — |
+| nonce管理なし (呼び出し側が正しいnonceを出す) | INFO | Phase 3の仕事 |
+| `Wallet::secret_bytes()`はraw `[u8; 32]`を返す — 使用後zeroizeされない | MEDIUM | 呼び出し側がzeroize必須 |
+
+**Phase 3の前提:**
+1. chain stateからのnonce取得 (RPCかlocal storage accessが必要)。
+2. 送る前のbalance check (RPCかlocal storage accessが必要)。
+3. `secret_bytes()`の戻りは使用後zeroize必須。
 
 ---
 
-## M. Regression Test Coverage
+## L. Cross-Networkセキュリティ
+
+| Finding | Severity | Status |
+|---------|----------|--------|
+| Mainnet、testnet、regtestでnetwork magic bytesが別 | OK | — |
+| networkごとにgenesis hashがpin留め | OK | — |
+| RPC serverはnetwork contextを強制しない | INFO | 許容。1ノード1networkだから |
+
+---
+
+## M. 回帰テストカバー
 
 | Area | Tests | Status |
 |------|-------|--------|
@@ -255,59 +255,59 @@ chroma wallet import --name my --key-file /path/to/key.txt
 | JSON format validation | ✅ `test_keystore_json_format` | OK |
 | Mempool validation (valid, zero amount, self-send, bad sig) | ✅ 4 tests | OK |
 | Mempool nonce replacement | ✅ `test_nonce_replacement` | OK |
-| **RPC API key auth** | ❌ MISSING | **Must add** |
-| **RPC unauthorized rejection** | ❌ MISSING | **Must add** |
-| **RPC malformed request** | ❌ MISSING | **Must add** |
-| **RPC body size limit** | ❌ MISSING | **Must add** |
-| **Keystore file permissions** | ❌ MISSING | **Must add** |
-| **Constant-time MAC comparison** | ❌ MISSING | **Must add** |
+| **RPC API key auth** | ❌ MISSING | **追加必須** |
+| **RPC unauthorized rejection** | ❌ MISSING | **追加必須** |
+| **RPC malformed request** | ❌ MISSING | **追加必須** |
+| **RPC body size limit** | ❌ MISSING | **追加必須** |
+| **Keystore file permissions** | ❌ MISSING | **追加必須** |
+| **Constant-time MAC comparison** | ❌ MISSING | **追加必須** |
 
 ---
 
-## Summary: Findings by Severity
+## Summary: Severity別Findings
 
 | Severity | Count | Items |
 |----------|-------|-------|
-| **HIGH** | 4 | API key timing attack, open access when no key, CLI `--key` in cmdline, keystore file permissions |
-| **MEDIUM** | 6 | MAC not constant-time, no atomic keystore write, CORS permissive, no rate limiting, sendRawTransaction lock contention, error message leakage |
-| **LOW** | 5 | Argon2 panic, jsonrpc field unvalidated, u32 truncation, linear hash scan, hash recomputation |
-| **INFO** | 7 | Various design decisions, acceptable for testnet |
+| **HIGH** | 4 | API keyタイミング攻撃、keyなしopen access、cmdlineのCLI `--key`、keystore file permission |
+| **MEDIUM** | 6 | MAC非constant-time、keystore非atomic write、permissive CORS、rate limitingなし、sendRawTransaction lock競合、error message漏れ |
+| **LOW** | 5 | Argon2 panic、jsonrpc field未検証、u32切捨て、線形hash scan、hash再計算 |
+| **INFO** | 7 | 設計判断いろいろ。testnetは許容 |
 
 ---
 
-## Recommended Fix Priority
+## 推奨修正優先度
 
-### CRITICAL (must fix before testnet)
-1. **API key timing attack** — Use `subtle::ConstantTimeEq` in `auth.rs`
-2. **Open access when no API key** — Log warning; consider requiring key for non-localhost binds
-3. **CLI `--key` in process cmdline** — Remove `--key` arg, use stdin/file instead
-4. **Keystore file permissions** — Set 0600 on Linux/macOS
+### CRITICAL (testnet前に直す)
+1. **API keyタイミング攻撃** — `auth.rs`に`subtle::ConstantTimeEq`を使う
+2. **API keyなしopen access** — 警告を出す。non-localhost bind時はkey必須を検討する
+3. **CLI `--key`のprocess cmdline露出** — `--key` argを消してstdin/fileにする
+4. **Keystore file permission** — Linux/macOSで0600にする
 
-### HIGH (should fix before testnet)
-5. **MAC comparison constant-time** — Use `subtle::ConstantTimeEq`
-6. **Atomic keystore write** — Write to temp file, then rename
-7. **CORS restriction** — Remove or restrict to localhost
-8. **Rate limiting** — Add concurrency limit + per-IP rate limit
+### HIGH (testnet前に直すべき)
+5. **MAC比較constant-time** — `subtle::ConstantTimeEq`を使う
+6. **Atomic keystore write** — temp fileに書いてrenameする
+7. **CORS制限** — localhostに絞るか取る
+8. **Rate limiting** — concurrency limit＋per-IP rate limitを入れる
 
-### MEDIUM (can defer to mainnet)
-9. **Memory zeroization** — Zeroize returned key bytes in `decrypt_key`
-10. **Error message sanitization** — Don't expose internal validation errors
-11. **Duplicate tx detection** — Check (sender, nonce) against chain state
+### MEDIUM (mainnetまででいい)
+9. **メモリzeroization** — `decrypt_key`の戻りkey bytesをzeroizeする
+10. **Error message sanitization** — 内部validation errorを出さない
+11. **重複tx検出** — mempool受け入れ前に(sender, nonce)をchain stateと照合する
 
-### LOW (nice to have)
-12. Validate `jsonrpc` field equals "2.0"
-13. Range check height parameter
-14. Optimize hash computation in `sendRawTransaction`
+### LOW (あればいい)
+12. `jsonrpc` fieldが"2.0"か見る
+13. height parameterのrange check
+14. `sendRawTransaction`のhash計算を速くする
 
 ---
 
-## Phase 3 Blockers
+## Phase 3 Blocker
 
-Before implementing the wallet send flow (Phase 3), the following must be resolved:
+wallet send flow (Phase 3)の前に以下を片付けること:
 
-1. **Constant-time API key comparison** (HIGH)
-2. **Keystore file permissions** (HIGH)  
-3. **CLI `--key` security** (HIGH)
-4. **Add missing regression tests** for RPC auth (MEDIUM)
+1. **Constant-time API key比較** (HIGH)
+2. **Keystore file permission** (HIGH)
+3. **CLI `--key`セキュリティ** (HIGH)
+4. **RPC authの回帰テスト追加** (MEDIUM)
 
-Phase 3 implementation may proceed after these items are fixed and verified.
+Phase 3実装はこれらを直して検証してから進めていいです。

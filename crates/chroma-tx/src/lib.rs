@@ -133,7 +133,6 @@ pub fn create_transaction(
     let pubkey = PublicKey32::from_secret(secret)
         .map_err(|e| CoreError::InvalidSignature(format!("key derivation failed: {}", e)))?;
 
-    // Verify derived address matches expected sender
     let derived = {
         let h = hash160(&pubkey.0);
         Address::from_hash160(Hash160(h))
@@ -706,9 +705,7 @@ mod tests {
         )
         .unwrap();
         let encoded = tx.encode();
-        // Remove last byte → should fail
         assert!(Transaction::decode(&encoded[..131]).is_err());
-        // Add one extra byte → should fail
         let mut extended = encoded;
         extended.push(0x00);
         assert!(Transaction::decode(&extended).is_err());

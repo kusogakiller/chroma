@@ -30,7 +30,6 @@ mod tests {
         let h2 = Hash::blake3(b"test2");
         assert_ne!(h, h2);
 
-        // Test hex encoding
         let hex_str = h.to_hex();
         assert_eq!(hex_str.len(), 64);
         let parsed = Hash::from_hex(&hex_str).unwrap();
@@ -50,7 +49,6 @@ mod tests {
 
     #[test]
     fn test_leb128() {
-        // Test encoding
         assert_eq!(encode_leb128(0), vec![0x00]);
         assert_eq!(encode_leb128(127), vec![0x7F]);
         assert_eq!(encode_leb128(128), vec![0x80, 0x01]);
@@ -58,7 +56,6 @@ mod tests {
         assert_eq!(encode_leb128(16383), vec![0xFF, 0x7F]);
         assert_eq!(encode_leb128(16384), vec![0x80, 0x80, 0x01]);
 
-        // Test decoding
         assert_eq!(decode_leb128(&[0x00], 0).unwrap(), (0, 1));
         assert_eq!(decode_leb128(&[0x7F], 0).unwrap(), (127, 1));
         assert_eq!(decode_leb128(&[0x80, 0x01], 0).unwrap(), (128, 2));
@@ -66,7 +63,6 @@ mod tests {
         assert_eq!(decode_leb128(&[0xFF, 0x7F], 0).unwrap(), (16383, 2));
         assert_eq!(decode_leb128(&[0x80, 0x80, 0x01], 0).unwrap(), (16384, 3));
 
-        // Test max u64
         let max = u64::MAX;
         let encoded = encode_leb128(max);
         let (decoded, _) = decode_leb128(&encoded, 0).unwrap();
@@ -80,7 +76,6 @@ mod tests {
         let (decoded, _) = decode_bytes_leb128(&encoded, 0).unwrap();
         assert_eq!(data, decoded);
 
-        // Empty
         let empty = vec![];
         let encoded = encode_bytes_leb128(&empty);
         let (decoded, _) = decode_bytes_leb128(&encoded, 0).unwrap();
@@ -89,19 +84,15 @@ mod tests {
 
     #[test]
     fn test_canonical_primitives() {
-        // u8
         assert_eq!(u8::encode(&0xFF), vec![0xFF]);
         assert_eq!(u8::decode(&[0x42]).unwrap(), 0x42);
 
-        // u16
         assert_eq!(0x1234u16.encode(), vec![0x34, 0x12]); // little-endian
         assert_eq!(u16::decode(&[0x34, 0x12]).unwrap(), 0x1234);
 
-        // u32
         assert_eq!(0x12345678u32.encode(), vec![0x78, 0x56, 0x34, 0x12]);
         assert_eq!(u32::decode(&[0x78, 0x56, 0x34, 0x12]).unwrap(), 0x12345678);
 
-        // u64
         assert_eq!(
             0x123456789ABCDEFu64.encode(),
             vec![0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01]
@@ -111,12 +102,10 @@ mod tests {
             0x123456789ABCDEF
         );
 
-        // u128
         let val = 0x123456789ABCDEF0123456789ABCDEFu128;
         let encoded = val.encode();
         assert_eq!(u128::decode(&encoded).unwrap(), val);
 
-        // bool
         assert_eq!(true.encode(), vec![0x01]);
         assert_eq!(false.encode(), vec![0x00]);
         assert!(bool::decode(&[0x01]).unwrap());
@@ -131,7 +120,6 @@ mod tests {
         let decoded = Vec::<u8>::decode(&encoded).unwrap();
         assert_eq!(v, decoded);
 
-        // Check LEB128 length prefix
         assert_eq!(encoded[0], 3); // length 3
         assert_eq!(&encoded[1..], &[1u8, 2, 3]);
     }
@@ -151,7 +139,6 @@ mod tests {
         let decoded = BlockHeight::decode(&encoded).unwrap();
         assert_eq!(h, decoded);
 
-        // GENESIS
         let genesis = BlockHeight::GENESIS;
         assert_eq!(genesis.0, 0);
     }
@@ -165,19 +152,15 @@ mod tests {
         let sum = a.checked_add(b).unwrap();
         assert_eq!(u64::from(sum), 1_500_000);
 
-        // Overflow check (u64 limit)
         let max_u64 = Amount::new(u64::MAX);
         assert!(max_u64.checked_add(Amount::new(1)).is_none());
 
-        // Supply invariant check
         let max_supply = Amount::MAX_SUPPLY;
         assert_eq!(u64::from(max_supply), 100_000_000_000_000);
 
-        // Underflow check
         let zero = Amount::ZERO;
         assert!(zero.checked_sub(Amount::new(1)).is_none());
 
-        // Canonical encode/decode
         let encoded = a.encode();
         let decoded = Amount::decode(&encoded).unwrap();
         assert_eq!(a, decoded);
@@ -189,7 +172,6 @@ mod tests {
         assert_eq!(n.next().unwrap(), Nonce::new(43));
         assert_eq!(Nonce::ZERO.next().unwrap(), Nonce::new(1));
 
-        // Encode/decode
         let encoded = n.encode();
         let decoded = Nonce::decode(&encoded).unwrap();
         assert_eq!(n, decoded);
@@ -220,13 +202,11 @@ mod tests {
 
     #[test]
     fn test_compact_target() {
-        // Test difficulty 1
         let bits = CompactTarget::DIFFICULTY_1;
         let target = bits.to_full_target();
         let _ = target;
         assert_eq!(bits.0, 0x1d00ffff);
 
-        // Encode/decode
         let encoded = bits.encode();
         assert_eq!(encoded.len(), 4);
         let decoded = CompactTarget::decode(&encoded).unwrap();
@@ -235,11 +215,9 @@ mod tests {
 
     #[test]
     fn test_difficulty_from_bits() {
-        // DIFFICULTY_1 bits → difficulty should be 1
         let d1 = Difficulty::from_bits(CompactTarget::DIFFICULTY_1);
         assert_eq!(d1, Difficulty(1));
 
-        // Verify determinism
         let d1_again = Difficulty::from_bits(CompactTarget::DIFFICULTY_1);
         assert_eq!(d1, d1_again);
 
@@ -325,12 +303,9 @@ mod tests {
     #[test]
     fn test_compact_target_difficulty_1_target() {
         let target = CompactTarget::DIFFICULTY_1.to_full_target();
-        // CompactTarget(0x1d00ffff): exponent=29, mantissa=0x00ffff
-        // shift_bytes = 26, target placed at bytes [3..5] = [0x00, 0xff, 0xff]
         assert_eq!(target[3], 0x00);
         assert_eq!(target[4], 0xff);
         assert_eq!(target[5], 0xff);
-        // Other bytes should be zero
         assert_eq!(target[0], 0x00);
         assert_eq!(target[31], 0x00);
     }
@@ -538,15 +513,10 @@ mod tests {
 
     #[test]
     fn test_u256_shr() {
-        // U256([0, 0, 1, 0]) = 2^128
         let a = U256([0, 0, 1, 0]);
-        // 2^128 >> 64 = 2^64 = U256([0, 1, 0, 0])
         assert_eq!(a.shr(64), U256([0, 1, 0, 0]));
-        // 2^128 >> 128 = 1 = U256([1, 0, 0, 0])
         assert_eq!(a.shr(128), U256::from_u64(1));
-        // 2^128 >> 256 = 0
         assert_eq!(a.shr(256), U256::ZERO);
-        // 2 * 2^128 >> 1 = 2^128
         let b = U256([0, 0, 2, 0]);
         assert_eq!(b.shr(1), a);
     }
@@ -557,7 +527,6 @@ mod tests {
         let b = U256::from_u64(58);
         assert_eq!(a.wrapping_add(&b), U256::from_u64(100));
 
-        // Overflow wraps
         let max = U256::MAX;
         assert_eq!(max.wrapping_add(&U256::ONE), U256::ZERO);
     }
@@ -708,14 +677,12 @@ mod tests {
 
     #[test]
     fn test_leb128_edge_cases() {
-        // Test max value
         let max = u64::MAX;
         let encoded = encode_leb128(max);
         assert_eq!(encoded.len(), 10);
         let (decoded, _) = decode_leb128(&encoded, 0).unwrap();
         assert_eq!(decoded, max);
 
-        // Test boundary values
         let boundary = 128u64;
         let encoded = encode_leb128(boundary);
         assert_eq!(encoded, vec![0x80, 0x01]);
@@ -758,7 +725,6 @@ mod tests {
 
     #[test]
     fn test_strict_decode_exact_sizes() {
-        // All primitive decoders reject wrong sizes
         assert!(u16::decode(&[]).is_err());
         assert!(u16::decode(&[0x01]).is_err());
         assert!(u16::decode(&[0x01, 0x02, 0x03]).is_err());

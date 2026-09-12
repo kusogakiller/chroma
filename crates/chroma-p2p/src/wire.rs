@@ -599,11 +599,9 @@ mod tests {
 
     #[test]
     fn test_decode_with_magic_rejects_cross_network_mainnet_node_rejects_regtest() {
-        // A regtest peer encodes a message with regtest magic
         let msg = Message::with_magic(MessageType::Ping, vec![1, 2, 3], REGTEST_MAGIC);
         let wire = msg.encode();
 
-        // A mainnet node tries to decode it — must fail
         let result = Message::decode_with_magic(&wire, MAINNET_MAGIC);
         assert!(result.is_err(), "mainnet node must reject regtest magic");
         let err = result.unwrap_err();
@@ -616,18 +614,15 @@ mod tests {
 
     #[test]
     fn test_decode_with_magic_rejects_cross_network_regtest_node_rejects_mainnet() {
-        // A mainnet peer encodes a message with mainnet magic
         let msg = Message::with_magic(MessageType::Ping, vec![4, 5, 6], MAINNET_MAGIC);
         let wire = msg.encode();
 
-        // A regtest node tries to decode it — must fail
         let result = Message::decode_with_magic(&wire, REGTEST_MAGIC);
         assert!(result.is_err(), "regtest node must reject mainnet magic");
     }
 
     #[test]
     fn test_decode_with_magic_accepts_matching_network() {
-        // Mainnet message decoded by mainnet node — must succeed
         let msg = Message::with_magic(MessageType::Ping, vec![7, 8], MAINNET_MAGIC);
         let wire = msg.encode();
         let (decoded, consumed) = Message::decode_with_magic(&wire, MAINNET_MAGIC).unwrap();
@@ -635,7 +630,6 @@ mod tests {
         assert_eq!(decoded.payload, vec![7, 8]);
         assert_eq!(consumed, wire.len());
 
-        // Regtest message decoded by regtest node — must succeed
         let msg = Message::with_magic(MessageType::Pong, vec![9, 10], REGTEST_MAGIC);
         let wire = msg.encode();
         let (decoded, consumed) = Message::decode_with_magic(&wire, REGTEST_MAGIC).unwrap();
@@ -645,7 +639,6 @@ mod tests {
 
     #[test]
     fn test_decode_with_magic_preserves_wire_magic_in_message() {
-        // The decoded message's magic field should match what was on the wire
         let msg = Message::with_magic(MessageType::Ping, vec![1], REGTEST_MAGIC);
         let wire = msg.encode();
         let (decoded, _) = Message::decode_with_magic(&wire, REGTEST_MAGIC).unwrap();
@@ -658,8 +651,6 @@ mod tests {
 
     #[test]
     fn test_frame_rejects_huge_length_without_big_alloc() {
-        // 13-byte header claiming a 1 GB payload, only the header present.
-        // Must fail on the length check alone (no gigabyte allocation).
         let mut header = Vec::with_capacity(HEADER_SIZE);
         header.extend_from_slice(&REGTEST_MAGIC);
         header.push(MessageType::Block as u8);
@@ -676,7 +667,6 @@ mod tests {
 
     #[test]
     fn test_frame_rejects_truncated_payload() {
-        // Header claims 100 bytes, only 10 follow.
         let mut buf = Vec::with_capacity(HEADER_SIZE + 10);
         buf.extend_from_slice(&REGTEST_MAGIC);
         buf.push(MessageType::Ping as u8);
@@ -688,7 +678,6 @@ mod tests {
 
     #[test]
     fn test_inv_rejects_count_over_limit() {
-        // Count 100_001 > MAX_INV_ENTRIES with a tiny body.
         let mut data = Vec::new();
         data.extend_from_slice(&((MAX_INV_ENTRIES + 1) as u32).to_le_bytes());
         let err = InvMessage::decode(&data).unwrap_err();
@@ -701,7 +690,6 @@ mod tests {
 
     #[test]
     fn test_inv_rejects_truncated_entries() {
-        // Count 2 but only one entry present.
         let mut data = Vec::new();
         data.extend_from_slice(&2u32.to_le_bytes());
         data.push(InvType::Tx as u8);
@@ -732,8 +720,6 @@ mod tests {
 
     #[test]
     fn test_follow_cap_bounds_work() {
-        // MAX_INV_FOLLOW keeps per-message follow-up work bounded even for
-        // max-size inventories.
         const {
             assert!(MAX_INV_FOLLOW <= 1000);
             assert!(MAX_INV_FOLLOW * 33 <= MAX_MESSAGE_SIZE);
@@ -761,15 +747,12 @@ mod tests {
     #[test]
     fn test_fuzz_decoders_reject_garbage_cleanly() {
         let mut rng = XorShift64(0x12345678_9ABCDEF0);
-        // 5000 random blobs across all decoders: must never panic, and any
-        // Ok must round-trip (decode-able implies well-formed).
         for _ in 0..5000 {
             let len = (rng.next() % 300) as usize;
             let mut buf = vec![0u8; len];
             for b in buf.iter_mut() {
                 *b = (rng.next() & 0xFF) as u8;
             }
-            // Any network magic is fine for fuzzing: accept or reject, no panic.
             for magic in [MAGIC, TESTNET_MAGIC, REGTEST_MAGIC] {
                 let _ = Message::decode_with_magic(&buf, magic);
             }
@@ -785,9 +768,6 @@ mod tests {
     #[test]
     fn test_fuzz_mutated_valid_messages_stay_safe() {
         let mut rng = XorShift64(0x0FEDCBA9_87654321);
-        // Start from valid messages, flip random bytes: decoder must reject
-        // or accept-then-verify, never panic and never accept silently-bad
-        // framing (consumed length must match the buffer exactly).
         let valid_inv = InvMessage {
             inventory: vec![InvEntry {
                 inv_type: InvType::Tx,
@@ -797,7 +777,6 @@ mod tests {
         .encode();
         let valid_frame = Message::with_magic(MessageType::Inv, valid_inv.clone(), MAGIC).encode();
         for _ in 0..2000 {
-            // Mutate the frame.
             let mut frame = valid_frame.clone();
             let flips = 1 + (rng.next() % 4) as usize;
             for _ in 0..flips {
@@ -805,7 +784,6 @@ mod tests {
                 frame[pos] ^= 1u8 << (rng.next() % 8);
             }
             if let Ok((msg, consumed)) = Message::decode_with_magic(&frame, MAGIC) {
-                // Accepted frames must be exactly consumed and checksummed.
                 assert_eq!(consumed, frame.len());
                 assert_eq!(msg.magic, MAGIC);
             }

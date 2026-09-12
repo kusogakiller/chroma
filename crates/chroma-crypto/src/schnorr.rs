@@ -116,7 +116,6 @@ pub fn schnorr_sign(secret: &SecretKey32, msg_hash: &[u8; 32]) -> Result<Signatu
         let msg = Message::from_slice(msg_hash)
             .map_err(|e| CryptoError::InvalidSignature(format!("{:?}", e)))?;
 
-        // Derive aux_rand from secret key and message for domain separation
         let aux_rand = blake3(
             &(secret
                 .0
@@ -180,7 +179,6 @@ pub fn schnorr_batch_verify(
 
     let all_valid = AtomicBool::new(true);
 
-    // Verify all signatures; short-circuit on first failure
     std::thread::scope(|s| {
         let handles: Vec<_> = pubkeys
             .iter()
@@ -293,7 +291,6 @@ mod tests {
         let sig1 = schnorr_sign(&secret1, &msg).unwrap();
         let sig2 = schnorr_sign(&secret2, &msg).unwrap();
 
-        // Valid batch
         assert!(schnorr_batch_verify(&[pk1, pk2], &msg, &[sig1, sig2]).unwrap());
 
         // Swap signatures — pk1's sig is actually for pk2
@@ -326,7 +323,6 @@ mod tests {
         let hash3 = compute_sighash(&sender, &recipient, amount, 43, REGTEST_MAGIC);
         assert_ne!(hash1, hash3);
 
-        // Network domain separation: same fields, different network → different sighash
         let hash_mainnet = compute_sighash(&sender, &recipient, amount, nonce, MAINNET_MAGIC);
         let hash_testnet = compute_sighash(&sender, &recipient, amount, nonce, TESTNET_MAGIC);
         let hash_regtest = compute_sighash(&sender, &recipient, amount, nonce, REGTEST_MAGIC);
@@ -334,7 +330,6 @@ mod tests {
         assert_ne!(hash_mainnet, hash_regtest);
         assert_ne!(hash_testnet, hash_regtest);
 
-        // Verify domain separation: sighash differs from raw field hash
         let raw_data = {
             let mut d = Vec::with_capacity(56);
             d.extend_from_slice(&sender);

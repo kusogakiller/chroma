@@ -216,7 +216,6 @@ mod tests {
         let layer = PerIpCapLayer::new(2);
         let gate = Gate::new();
         let mut svc = layer.layer(gate.clone());
-        // Park 2 concurrent requests from ip(1) inside the gate.
         let mut pending = Vec::new();
         for _ in 0..2 {
             let mut svc_i = layer.layer(gate.clone());
@@ -224,7 +223,6 @@ mod tests {
                 async move { svc_i.call(req_with_ip(ip(1))).await },
             ));
         }
-        // Wait until both reached the inner service (both admitted).
         let admitted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while gate.open.load(Ordering::SeqCst) < 2 {
                 tokio::task::yield_now().await;
@@ -232,16 +230,12 @@ mod tests {
         })
         .await;
         assert!(admitted.is_ok(), "both requests must be admitted");
-        // Third concurrent request from the same IP is rejected immediately.
         let resp = svc.call(req_with_ip(ip(1))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
-        // A different IP is unaffected (admitted; its future parked too).
         let other = svc.call(req_with_ip(ip(2)));
         let other = tokio::spawn(other);
         tokio::task::yield_now().await;
-        // Map holds exactly the two tracked IPs.
         assert_eq!(layer.tracked_ips(), 2);
-        // Release everything: parked complete, slots drain to zero.
         gate.notify.notify_waiters();
         for h in pending {
             h.await.unwrap().unwrap();
@@ -249,7 +243,6 @@ mod tests {
         other.abort();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(layer.tracked_ips(), 0, "released slots must drain");
-        // Cancellation also releases: park one, abort it mid-flight.
         let mut svc_i = layer.layer(gate.clone());
         let h = tokio::spawn(async move { svc_i.call(req_with_ip(ip(3))).await });
         let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -266,7 +259,6 @@ mod tests {
 
     #[test]
     fn rate_limited_body_shape() {
-        // Rejection carries a JSON-RPC error envelope with null id.
         let resp = rate_limited_response();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }

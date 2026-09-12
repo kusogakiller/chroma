@@ -157,7 +157,6 @@ pub fn calculate_target_for_height(
         return Ok(CompactTarget(GENESIS_TARGET_BITS));
     }
 
-    // Only retarget at multiples of DIFFICULTY_ADJUSTMENT_WINDOW
     if !height.is_multiple_of(DIFFICULTY_ADJUSTMENT_WINDOW) {
         let prev = headers.get(&(height - 1)).ok_or_else(|| {
             CoreError::InvalidDifficulty(format!("missing header for height {}", height - 1))
@@ -165,7 +164,6 @@ pub fn calculate_target_for_height(
         return Ok(prev.bits);
     }
 
-    // Retarget height
     // Window spans heights [height - window, height - 1], which is `window` blocks
     // but only (window - 1) intervals between them.
     let intervals = (DIFFICULTY_ADJUSTMENT_WINDOW - 1) as u64;
@@ -208,11 +206,9 @@ pub fn calculate_target_for_height(
         return Ok(current.bits);
     }
 
-    // new_target = old_target × actual_time / target_time
     let new_target = mul_div(&old_target, actual_time, target_time)
         .ok_or_else(|| CoreError::InvalidDifficulty("difficulty calculation overflow".into()))?;
 
-    // Clamp: max decrease = old / 4, max increase = old × 4
     let (min_target, _) = old_target.div_rem(&U256::from_u64(MAX_DIFFICULTY_DECREASE_FACTOR));
     let max_target = old_target.shl(2);
 
@@ -250,10 +246,8 @@ fn mul_div(value: &U256, num: u64, den: u64) -> Option<U256> {
         return Some(U256::ZERO);
     }
 
-    // Split value into quotient and remainder of division by den
     let (q, r) = value.div_rem(&U256::from_u64(den));
 
-    // q * num
     let part1 = {
         let mut result = U256::ZERO;
         let mut addend = q;
@@ -268,7 +262,6 @@ fn mul_div(value: &U256, num: u64, den: u64) -> Option<U256> {
         result
     };
 
-    // (r * num) / den
     let part2 = {
         let mut temp = U256::ZERO;
         let mut addend = r;
@@ -460,7 +453,6 @@ impl ChainState {
 
         let existing_header = self.headers.get(&height).unwrap().clone();
 
-        // Direct competitor: same parent hash
         if block.header.previous_hash == existing_header.previous_hash {
             // Must be at the tip — otherwise we'd need to re-apply blocks after height
             if height != self.tip.height.0 {
@@ -484,14 +476,12 @@ impl ChainState {
                 )));
             }
 
-            // New chain wins — rollback the old block and apply the new one
             if !self.state.rollback_block() {
                 return Err(CoreError::InvalidBlock(
                     "failed to rollback state for reorg".to_string(),
                 ));
             }
 
-            // Set tip to parent for validation context
             let parent_height = height - 1;
             let parent_header = self.headers.get(&parent_height).ok_or_else(|| {
                 CoreError::InvalidBlock(format!(
@@ -512,14 +502,11 @@ impl ChainState {
 
             self.tip = parent_tip;
 
-            // Remove the old tip from tips
             let old_tip_hash = existing_header.hash();
             self.tips.remove(&old_tip_hash);
 
-            // Apply the new block
             self.apply_block_inner(block)
         } else {
-            // Deeper fork — different parent
             let fork_point = self.find_fork_point_for_block(block);
 
             match fork_point {
@@ -533,12 +520,10 @@ impl ChainState {
                         )));
                     }
 
-                    // Calculate competing chain work
                     let new_work = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
                         &block.header.bits.to_full_target(),
                     ));
 
-                    // Only reorg if competing chain has more work
                     if new_work <= self.tip.cumulative_work {
                         return Err(CoreError::InvalidBlock(format!(
                             "competing block at height {} has less or equal cumulative work, rejecting",
@@ -546,7 +531,6 @@ impl ChainState {
                         )));
                     }
 
-                    // Perform the reorg: rollback blocks from tip down to fork point
                     for _ in 0..rollback_depth {
                         if !self.state.rollback_block() {
                             return Err(CoreError::InvalidBlock(
@@ -557,7 +541,6 @@ impl ChainState {
                         self.tips.remove(&self.tip.hash);
                     }
 
-                    // Set tip to fork point
                     let fp_hash = self
                         .headers
                         .get(&fp)
@@ -567,15 +550,12 @@ impl ChainState {
                         self.tip = fp_tip;
                     }
 
-                    // Apply the new block from the fork point
                     self.apply_block_inner(block)
                 }
                 None => {
-                    // No common ancestor found — store as alt chain
                     let alt_chain = vec![block.header.clone()];
                     self.alt_headers.insert(block.hash(), alt_chain);
 
-                    // Cap alt_headers at 100 entries to prevent memory leaks
                     const MAX_ALT_HEADERS: usize = 100;
                     if self.alt_headers.len() > MAX_ALT_HEADERS {
                         let oldest: Vec<Hash> = self.alt_headers.keys().take(10).copied().collect();
@@ -593,12 +573,10 @@ impl ChainState {
         }
     }
 
-    /// Find the fork point height between the current chain and a competing block's chain.
-    /// Walks backwards through the competing block's ancestors to find the common ancestor.
+    /// Find the height where a competing block's chain diverges from ours.
     fn find_fork_point_for_block(&self, block: &Block) -> Option<u32> {
         let height = block.header.height.0;
 
-        // Check if the parent at height-1 matches
         if height > 0 {
             if let Some(active_header) = self.headers.get(&(height - 1)) {
                 if active_header.hash() == block.header.previous_hash {
@@ -607,7 +585,6 @@ impl ChainState {
             }
         }
 
-        // Check the block's previous hash directly against our chain
         let current_height = height.saturating_sub(1);
         let current_prev_hash = block.header.previous_hash;
 
@@ -620,8 +597,7 @@ impl ChainState {
         None
     }
 
-    /// Find the fork point between the current chain and a tip identified by hash.
-    /// Walks the competing chain's headers stored in alt_headers.
+    /// Find the fork point for a known tip hash.
     pub fn find_fork_point(&self, tip_hash: &Hash) -> Option<u32> {
         let tip = self.tips.get(tip_hash)?;
         let height = tip.height.0;
@@ -630,10 +606,7 @@ impl ChainState {
             return Some(0);
         }
 
-        // Walk backwards through the competing chain using alt_headers if available
         if let Some(alt_chain) = self.alt_headers.get(tip_hash) {
-            // alt_chain contains headers from some point forward
-            // Walk backwards from the tip's parent
             let mut check_hash = tip.header.previous_hash;
             let mut check_height = height.saturating_sub(1);
 
@@ -646,7 +619,6 @@ impl ChainState {
                 if check_height == 0 {
                     break;
                 }
-                // Try to find this hash in alt_chain to continue walking
                 if let Some(alt_header) = alt_chain.iter().find(|h| h.height.0 == check_height) {
                     check_hash = alt_header.previous_hash;
                     check_height -= 1;
@@ -656,7 +628,6 @@ impl ChainState {
             }
         }
 
-        // Fallback: check if the parent at height-1 matches
         if let Some(active_header) = self.headers.get(&(height - 1)) {
             if active_header.hash() == tip.header.previous_hash {
                 return Some(height - 1);
@@ -666,7 +637,7 @@ impl ChainState {
         None
     }
 
-    /// How many blocks would need to be rolled back to switch to a better tip.
+    /// Blocks to roll back to reach the best competing tip.
     pub fn reorg_depth(&self) -> usize {
         let best = self.tips.values().max_by_key(|t| t.cumulative_work);
 

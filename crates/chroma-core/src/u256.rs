@@ -257,9 +257,7 @@ mod tests {
     fn test_leading_zeros() {
         assert_eq!(U256::ZERO.leading_zeros(), 256);
         assert_eq!(U256::ONE.leading_zeros(), 255);
-        // 2^63 in 256-bit representation has 192 leading zeros
         assert_eq!(U256::from_u64(0x8000000000000000).leading_zeros(), 192);
-        // 2^255 (bit 255 set, highest limb bit 63) has 0 leading zeros
         let mut high = [0u8; 32];
         high[0] = 0x80;
         assert_eq!(U256::from_be_bytes(&high).leading_zeros(), 0);
@@ -274,7 +272,6 @@ mod tests {
         let b = U256([0, 1, 0, 0]);
         assert_eq!(b.shr(64), U256::ONE);
 
-        // Round-trip
         let c = U256([0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0x9ABCDEF0]);
         assert_eq!(c.shl(0), c);
         assert_eq!(c.shr(0), c);
@@ -286,11 +283,9 @@ mod tests {
         let b = U256::from_u64(30);
         assert_eq!(a.wrapping_sub(&b).to_u64(), Some(70));
 
-        // Underflow wraps
         let c = U256::from_u64(5);
         let d = U256::from_u64(10);
         let result = c.wrapping_sub(&d);
-        // Should be MAX - 4 (wrapping)
         assert_eq!(result.0[0], u64::MAX - 4);
     }
 
@@ -330,13 +325,11 @@ mod tests {
 
     #[test]
     fn test_div_large_numbers() {
-        // 2^128 / 2^64 = 2^64
         let a = U256([0, 1, 0, 0]); // 2^64
         let b = U256::from_u64(1);
         let (q, _r) = a.div_rem(&b);
         assert_eq!(q, a);
 
-        // 2^128 / 2^64 = 2^64
         let two_128 = U256([0, 0, 1, 0]);
         let two_64 = U256([0, 1, 0, 0]);
         let (q, r) = two_128.div_rem(&two_64);
@@ -346,12 +339,10 @@ mod tests {
 
     #[test]
     fn test_difficulty_1_division() {
-        // DIFFICULTY_1 target / DIFFICULTY_1 target = 1
         let bits = 0x1d00ffffu32;
         let exponent = bits >> 24;
         let mantissa = bits & 0x00ffffff;
         let shift_bytes = exponent - 3;
-        // target = mantissa << (8 * shift_bytes)
         let target = U256::from_u64(mantissa as u64).shl(shift_bytes * 8);
         let (q, r) = target.div_rem(&target);
         assert_eq!(q, U256::ONE);
@@ -371,9 +362,7 @@ mod tests {
         let max = U256::MAX;
         let two = U256::from_u64(2);
         let (q, r) = max.div_rem(&two);
-        // (2^256 - 1) / 2 = 2^255 - 1, remainder 1
         assert_eq!(r, U256::ONE);
-        // 2^255 - 1 should have bits 0..254 set
         let expected_q = U256::MAX.shr(1);
         assert_eq!(q, expected_q, "(2^256-1)/2 should be 2^255-1");
     }

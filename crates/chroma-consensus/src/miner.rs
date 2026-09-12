@@ -149,9 +149,6 @@ mod tests {
     }
 
     fn easy_bits() -> CompactTarget {
-        // Ultra-easy target for RandomX tests: 0x20ffffff
-        // With RandomX (~1 hash/sec), we need nearly every nonce to succeed.
-        // Target = 0xFFFFFF * 2^232 covers ~99.999% of hash space.
         CompactTarget(0x20ffffff)
     }
 
@@ -213,7 +210,6 @@ mod tests {
     fn test_mine_block_easy() {
         use chroma_core::constants::GENESIS_RANDOMX_SEED;
         use chroma_crypto::randomx::{derive_seed, init_randomx_context};
-        // Initialize RandomX with genesis seed for testing
         let seed = derive_seed(&Hash::blake3(GENESIS_RANDOMX_SEED));
         init_randomx_context(&seed).unwrap();
 
@@ -350,9 +346,6 @@ mod tests {
 
     #[test]
     fn test_mine_block_with_limit_respects_bound() {
-        // Use an impossible target (difficulty 0 = maximum difficulty)
-        // so no nonce will ever match, proving the limit stops the search.
-        // With RandomX (~1 hash/sec), use a small limit to keep the test fast.
         let genesis = build_genesis_block_with_bits(CompactTarget(0x20ffffff));
         let impossible_bits = CompactTarget(0x00000001); // nearly impossible
         let ctx = BlockAssemblyContext {
@@ -367,7 +360,6 @@ mod tests {
         let mut block = assemble_block(&ctx, &[]).unwrap();
         let start = std::time::Instant::now();
 
-        // With only 5 nonces and an impossible target, this must return Err quickly
         let result = mine_block_with_limit(&mut block, 5);
         let elapsed = start.elapsed();
 

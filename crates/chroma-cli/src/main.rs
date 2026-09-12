@@ -161,7 +161,6 @@ async fn main() -> anyhow::Result<()> {
             rpc_api_key,
             insecure_plaintext_peers,
         } => {
-            // Initialize tracing
             let env_filter =
                 tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                     let level = log_level.as_deref().unwrap_or("info");
@@ -172,7 +171,6 @@ async fn main() -> anyhow::Result<()> {
                 .with_target(false)
                 .init();
 
-            // Network selection: exactly one of mainnet/testnet/regtest
             let network_kind = if regtest {
                 chroma_consensus::NetworkKind::Regtest
             } else if testnet {
@@ -205,8 +203,7 @@ async fn main() -> anyhow::Result<()> {
             let genesis_hash = genesis.hash();
             tracing::info!("Genesis hash: {}", genesis_hash.to_hex());
 
-            // Plaintext peers are forbidden on mainnet even when explicitly
-            // requested: mainnet P2P is Noise-only, no downgrade path.
+            // Mainnet P2P is Noise-only with no downgrade path.
             if insecure_plaintext_peers && !regtest && !testnet {
                 eprintln!(
                     "Error: --insecure-plaintext-peers is refused on mainnet. \
@@ -249,7 +246,6 @@ async fn main() -> anyhow::Result<()> {
             let mut node = chroma_p2p::Node::new(config);
             let mut event_rx = node.event_rx().expect("event_rx already taken");
 
-            // Start RPC server if requested
             if let Some(rpc_addr) = rpc_listen {
                 let rpc_state = chroma_rpc::RpcState {
                     storage: node.storage_arc(),
@@ -391,7 +387,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                     let mut buf = [0u8; 32];
                     buf.copy_from_slice(&key_bytes);
-                    // Zeroize sensitive data from memory
                     drop(key_hex);
                     drop(key_bytes);
                     let sk =
@@ -435,7 +430,6 @@ async fn main() -> anyhow::Result<()> {
                 if confirm == "yes" {
                     let key_hex = hex::encode(wallet.secret_bytes());
                     println!("Secret key: {}", key_hex);
-                    // Note: key_hex is on stack, will be dropped at end of scope
                 } else {
                     println!("Aborted.");
                 }
@@ -489,7 +483,6 @@ async fn main() -> anyhow::Result<()> {
                 regtest,
                 testnet,
             } => {
-                // Validate all inputs BEFORE prompting for password
                 let recipient = match bech32_to_address(&to) {
                     Some(a) => a,
                     None => {
@@ -513,7 +506,6 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
 
-                // Now prompt for password (only after all validation passes)
                 let password = rpassword::prompt_password("Wallet password: ").unwrap();
                 let wallet =
                     chroma_wallet::Wallet::load(&path, &password, &name).unwrap_or_else(|e| {
@@ -522,8 +514,6 @@ async fn main() -> anyhow::Result<()> {
                     });
                 drop(password);
 
-                // Network domain separation: wallet must sign with the same
-                // magic the node validates with. Default is mainnet.
                 let network_magic = if regtest {
                     chroma_core::constants::REGTEST_MAGIC
                 } else if testnet {
@@ -535,7 +525,6 @@ async fn main() -> anyhow::Result<()> {
 
                 let rpc_url = rpc_url.unwrap_or_else(|| "http://127.0.0.1:8334".to_string());
 
-                // Use wallet's full send flow: get nonce/balance, build, sign, submit
                 let result = wallet
                     .send(
                         &rpc_url,

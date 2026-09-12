@@ -308,7 +308,6 @@ mod tests {
     #[test]
     fn test_noise_params_valid() {
         let params: snow::params::NoiseParams = NOISE_PARAMS.parse().unwrap();
-        // XK pattern should parse successfully
         assert!(!format!("{:?}", params).is_empty());
     }
 
@@ -325,17 +324,14 @@ mod tests {
 
         let mut buf = vec![0u8; 512];
 
-        // Msg1: e
         let mut msg1 = vec![0u8; 64];
         let n1 = initiator.write_message(&[], &mut msg1).unwrap();
         responder.read_message(&msg1[..n1], &mut buf).unwrap();
 
-        // Msg2: e, ee, s, es
         let mut msg2 = vec![0u8; 128];
         let n2 = responder.write_message(&[], &mut msg2).unwrap();
         initiator.read_message(&msg2[..n2], &mut buf).unwrap();
 
-        // Msg3: s, se
         let mut msg3 = vec![0u8; 64];
         let n3 = initiator.write_message(&[], &mut msg3).unwrap();
         responder.read_message(&msg3[..n3], &mut buf).unwrap();
@@ -343,7 +339,6 @@ mod tests {
         let mut t1 = NoiseTransport::from_handshake(initiator).unwrap();
         let mut t2 = NoiseTransport::from_handshake(responder).unwrap();
 
-        // Encrypt from t1, decrypt on t2
         let plaintext = b"hello, encrypted world!";
         let encrypted = t1.encrypt(plaintext).unwrap();
         assert_ne!(encrypted.as_slice(), plaintext.as_slice());
@@ -351,7 +346,6 @@ mod tests {
         let decrypted = t2.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
 
-        // Encrypt from t2, decrypt on t1
         let plaintext2 = b"response from responder";
         let encrypted2 = t2.encrypt(plaintext2).unwrap();
         let decrypted2 = t1.decrypt(&encrypted2).unwrap();
@@ -389,7 +383,6 @@ mod tests {
         let plaintext = b"secret data";
         let mut encrypted = t1.encrypt(plaintext).unwrap();
 
-        // Tamper with the ciphertext
         if encrypted.len() > 10 {
             encrypted[10] ^= 0xFF;
         }
@@ -416,17 +409,14 @@ mod tests {
 
         let mut buf = vec![0u8; 512];
 
-        // Msg1: e
         let mut msg1 = vec![0u8; 64];
         let n1 = initiator.write_message(&[], &mut msg1).unwrap();
         responder.read_message(&msg1[..n1], &mut buf).unwrap();
 
-        // Msg2: e, ee, s, es
         let mut msg2 = vec![0u8; 128];
         let n2 = responder.write_message(&[], &mut msg2).unwrap();
         initiator.read_message(&msg2[..n2], &mut buf).unwrap();
 
-        // Msg3: s, se
         let mut msg3 = vec![0u8; 64];
         let n3 = initiator.write_message(&[], &mut msg3).unwrap();
         responder.read_message(&msg3[..n3], &mut buf).unwrap();
@@ -507,7 +497,6 @@ mod tests {
         let t1 = NoiseTransport::from_handshake(initiator).unwrap();
         let t2 = NoiseTransport::from_handshake(responder).unwrap();
 
-        // Each side's view of the remote static key equals our derivation.
         assert_eq!(
             t1.get_remote_static_key().unwrap(),
             &x25519_public_from_private(&key2)
@@ -516,7 +505,6 @@ mod tests {
             t2.get_remote_static_key().unwrap(),
             &x25519_public_from_private(&key1)
         );
-        // Distinct keys, distinct identities.
         assert_ne!(
             x25519_public_from_private(&key1),
             x25519_public_from_private(&key2)
@@ -557,12 +545,10 @@ mod tests {
         let mut t1 = NoiseTransport::from_handshake(initiator).unwrap();
         let mut t2 = NoiseTransport::from_handshake(responder).unwrap();
 
-        // Both sides rekey their directional ciphers symmetrically.
         t1.state.rekey_outgoing();
         t2.state.rekey_incoming();
         let enc = t1.encrypt(b"after manual rekey").unwrap();
         assert_eq!(t2.decrypt(&enc).unwrap(), b"after manual rekey");
-        // And back operational in the other direction too.
         t2.state.rekey_outgoing();
         t1.state.rekey_incoming();
         let enc2 = t2.encrypt(b"reply after rekey").unwrap();
@@ -623,13 +609,10 @@ mod tests {
         let mut t1 = NoiseTransport::from_handshake(initiator).unwrap();
         let mut t2 = NoiseTransport::from_handshake(responder).unwrap();
 
-        // Oversize plaintext rejected before touching snow.
         let big = vec![0xAAu8; NOISE_MAX_PLAINTEXT + 1];
         assert!(t1.encrypt(&big).is_err());
-        // Oversize ciphertext rejected before allocating.
         let big_ct = vec![0xBBu8; NOISE_MAX_CIPHERTEXT + 1];
         assert!(t2.decrypt(&big_ct).is_err());
-        // Boundary sizes still work.
         let max_ok = vec![0xCCu8; NOISE_MAX_PLAINTEXT];
         let enc = t1.encrypt(&max_ok).unwrap();
         assert_eq!(enc.len(), NOISE_MAX_PLAINTEXT + 16);

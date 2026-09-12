@@ -182,16 +182,13 @@ where
                 .local_private_key(static_key)
                 .build_initiator()
                 .map_err(|_| HandshakeError::Crypto("initiate"))?;
-            // -> e
             let n = hs
                 .write_message(&[], &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("write e"))?;
             write_hs_frame(writer, &scratch[..n], deadline).await?;
-            // <- e, ee, s, es
             let m2 = read_hs_frame(reader, deadline).await?;
             hs.read_message(&m2, &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("read ee"))?;
-            // -> s, se
             let n = hs
                 .write_message(&[], &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("write se"))?;
@@ -203,16 +200,13 @@ where
                 .local_private_key(static_key)
                 .build_responder()
                 .map_err(|_| HandshakeError::Crypto("respond"))?;
-            // <- e
             let m1 = read_hs_frame(reader, deadline).await?;
             hs.read_message(&m1, &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("read e"))?;
-            // -> e, ee, s, es
             let n = hs
                 .write_message(&[], &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("write ee"))?;
             write_hs_frame(writer, &scratch[..n], deadline).await?;
-            // <- s, se
             let m3 = read_hs_frame(reader, deadline).await?;
             hs.read_message(&m3, &mut scratch)
                 .map_err(|_| HandshakeError::Crypto("read se"))?;
@@ -361,7 +355,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
         if buf.remaining() == 0 {
             return Poll::Ready(Ok(()));
         }
-        // Serve decrypted backlog first.
         if this.backpos < this.backlog.len() {
             let avail = this.backlog.len() - this.backpos;
             let n = avail.min(buf.remaining());
@@ -373,10 +366,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
             }
             return Poll::Ready(Ok(()));
         }
-        // Assemble exactly one more encrypted frame, then decrypt it.
         loop {
             if this.body_need == 0 {
-                // Reading the 4-byte length prefix.
                 let mut rb = ReadBuf::new(&mut this.len_buf[this.len_pos..]);
                 match Pin::new(&mut this.inner).poll_read(cx, &mut rb) {
                     Poll::Pending => return Poll::Pending,
@@ -385,7 +376,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
                         let n = rb.filled().len();
                         if n == 0 {
                             if this.len_pos == 0 {
-                                // Clean EOF at a frame boundary.
                                 return Poll::Ready(Ok(()));
                             }
                             return Poll::Ready(Err(unexpected_eof()));
@@ -405,7 +395,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
                     }
                 }
             } else {
-                // Reading the ciphertext body.
                 let need = this.body_need;
                 let pos = this.body_pos;
                 let mut rb = ReadBuf::new(&mut this.body[pos..need]);
@@ -421,7 +410,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
                         if this.body_pos < this.body_need {
                             continue;
                         }
-                        // Complete frame: decrypt (fail closed).
                         let ct = std::mem::take(&mut this.body);
                         this.body_need = 0;
                         this.body_pos = 0;
@@ -441,7 +429,6 @@ impl<R: AsyncRead + Unpin> AsyncRead for NoiseReader<R> {
                     }
                 }
             }
-            // Backlog now holds fresh plaintext: serve it below.
             if this.backpos < this.backlog.len() {
                 let avail = this.backlog.len() - this.backpos;
                 let n = avail.min(buf.remaining());
@@ -554,7 +541,6 @@ mod tests {
             remote2,
             chroma_crypto::noise::x25519_public_from_private(&k1)
         );
-        // Handshake only borrowed the halves; move them into adapters.
         (
             (NoiseReader::new(ar, s1.clone()), NoiseWriter::new(aw, s1)),
             (NoiseReader::new(br, s2.clone()), NoiseWriter::new(bw, s2)),
@@ -584,17 +570,14 @@ mod tests {
             rb.read_exact(&mut buf[..7]).await.unwrap();
             assert_eq!(&buf[..7], msg.as_bytes());
             if i % 25_000 == 0 {
-                // Reverse direction keeps working at every stage.
                 let back = format!("r{:06}", i);
                 wb.send(back.as_bytes()).await.unwrap();
                 ra.read_exact(&mut buf[..7]).await.unwrap();
                 assert_eq!(&buf[..7], back.as_bytes());
             }
         }
-        // Session counters advanced symmetrically past the boundary.
         assert_eq!(wa.session().sent_count(), 100_001);
         assert_eq!(rb.session().received_count(), 100_001);
-        // Still fully operational afterwards, both directions.
         wa.send(b"after").await.unwrap();
         rb.read_exact(&mut buf[..5]).await.unwrap();
         assert_eq!(&buf[..5], b"after");
@@ -626,7 +609,6 @@ mod tests {
         }
         assert_eq!(wa.session().sent_count(), 210_001);
         assert_eq!(rb.session().received_count(), 210_001);
-        // Fully operational after the second rekey, both directions.
         wa.send(b"after2").await.unwrap();
         rb.read_exact(&mut buf[..6]).await.unwrap();
         assert_eq!(&buf[..6], b"after2");
@@ -650,8 +632,6 @@ mod tests {
         );
         let (s1, _) = r1.unwrap();
         let (s2, _) = r2.unwrap();
-        // Three frames coalesced into a single write. Directions: `aw`
-        // feeds `br` (initiator→responder), `bw` feeds `ar`.
         let mut burst = Vec::new();
         for word in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
             let ct = s1.encrypt_chunk(word).unwrap();

@@ -2,54 +2,51 @@
 
 ## [0.1.0] — V1.0 Release Candidate (UNRELEASED, NO-GO)
 
-### Added
+### 追加
 
-- DB schema versioning (`schema_version`, `CURRENT_SCHEMA_VERSION = 1`)
-  with fail-closed startup checks (newer/older/corrupted refused).
-- Crash-recovery test harness readiness signal for loop-mode kill tests.
-- Corrupted schema-encoding rejection test.
-- Non-blocking mining: RandomX PoW moved off tokio async workers
-  (`spawn_blocking`); consensus logic unchanged.
-- Operator documentation: `OPERATIONS.md`, `RELEASE.md`.
-- Canonical RandomX: replaced `rustdom-x` (noncanonical + GPL-3.0) with
-  vendored `randomx-rs` 1.6.0 (BSD-3-Clause, `[patch.crates-io]` at
-  `vendor/randomx-rs`); dedicated worker thread (no `unsafe`); light mode.
-  Measured: 4/4 official vectors under interpreter AND recommended
-  (JIT/HARD_AES) flags; regtest release mining ~7 blocks/s at 288 MB RSS
-  (was ~2.6 GB).
-- Idle read deadline (`IDLE_EVICT_SECS`) in the P2P message loop so
-  half-open connections self-terminate (SPEC §10 bound).
+- DB schema versioning (`schema_version`、`CURRENT_SCHEMA_VERSION = 1`)。
+  fail-closed起動チェックつき（newer/older/corruptedは拒否）。
+- loop-mode kill test用のcrash-recovery test harness readiness signal。
+- schema-encoding壊れのrejection test。
+- ノンブロッキングマイニング: RandomX PoWをtokio async workerから外して
+  (`spawn_blocking`)。consensus logic不変。
+- 運用ドキュメント: `OPERATIONS.md`、`RELEASE.md`。
+- Canonical RandomX: `rustdom-x`（非正規＋GPL-3.0）をvendored
+  `randomx-rs` 1.6.0 (BSD-3-Clause、`vendor/randomx-rs`の`[patch.crates-io]`)に
+  置換。専用worker thread (`unsafe`なし)。light mode。
+  実測: official vector 4/4がinterpreterとrecommended (JIT/HARD_AES)の
+  両方で一致。regtest release mining約7 blocks/sでRSS 288 MB (前は約2.6 GB)。
+- P2P message loopにidle read deadline (`IDLE_EVICT_SECS`)。half-open
+  connectionが自分で終わるように (SPEC §10 bound)。
 
-### Fixed
+### 修正
 
-- `crash_real_kill_mid_stream_recovers_coherent_prefix` harness race
-  (parent killed child before genesis commit): 100/100 PASS after fix.
-- `e2e_chaos_reconnect_invalid_tx_cycle` handshake/scoring timeouts under
-  mining load (miner starved async runtime; PoW moved to `spawn_blocking`,
-  consensus logic unchanged): 4/4 PASS after fix, full E2E 48/61 → 60/61.
-- Half-open connections now self-terminate after `IDLE_EVICT_SECS` without
-  frames (same bound as peer-tick idle eviction); tick-level `Disconnect`
-  alone only removed bookkeeping and could leave a zombie read task.
-- `e2e_soak_restart_mining_continues` drain budget derived from the
-  product's `IDLE_EVICT_SECS` bound instead of a fixed 60 s (assertion
-  still exact-zero; leak detection preserved).
+- `crash_real_kill_mid_stream_recovers_coherent_prefix`のharness race
+  （genesis commit前に親が子をkill）: 修正後100/100 PASS。
+- `e2e_chaos_reconnect_invalid_tx_cycle`のmining負荷下handshake/scoring timeout
+  （minerがasync runtimeを枯渇。PoWを`spawn_blocking`へ。consensus logic不変）:
+  修正後4/4 PASS、E2E全体48/61 → 60/61。
+- frameなし`IDLE_EVICT_SECS`超えのhalf-open connectionが自分で終わるように。
+  tick側`Disconnect`だけだとbookkeepingしか消えずzombie read taskが残った。
+- `e2e_soak_restart_mining_continues`のdrain budgetを固定60秒からproductの
+  `IDLE_EVICT_SECS` bound由来に（assertionはexact-zeroのまま。leak検出維持）。
 
-### Proven blockers (measured, not assumed)
+### 実測済みblocker
 
-- `rustdom-x 1.1.0` is NOT canonical RandomX: key "test key 000" + input
-  "This is a test" yields `1829809f…` vs reference `639183aa…`. Chroma PoW
-  is a consensus-incompatible variant. Equivalence DISPROVEN.
-- `rustdom-x 1.1.0` is GPL-3.0; workspace is MIT OR Apache-2.0. Sole
-  copyleft crate in the 301-crate tree. Distribution blocker.
-- `cargo audit` (1243 advisories): 0 vulnerabilities; 2 unmaintained
-  warnings (`fxhash`, `instant`, both via `sled 0.34.7`).
+- `rustdom-x 1.1.0`はcanonical RandomXではない: key "test key 000"＋input
+  "This is a test"で`1829809f…`が出る。正規は`639183aa…`。Chroma PoWとは
+  consensus互換なし。等価性は否定済み。
+- `rustdom-x 1.1.0`はGPL-3.0。workspaceはMIT OR Apache-2.0。301-crate treeで
+  唯一のcopyleft crate。配布blocker。
+- `cargo audit` (1243 advisories): 脆弱性0。unmaintained警告2つ
+  (`fxhash`、`instant`、どちらも`sled 0.34.7`経由)。
 
-### Known issues (release blockers)
+### 既知の問題 (release blocker)
 
-- DNS seeds `seed.chroma.network` / `seed-testnet.chroma.network` return
-  NXDOMAIN; automatic bootstrap NOT PROVEN.
-- Full E2E: 60/61 post-fix; `e2e_soak_restart_mining_continues` ~50% fail
-  (miner holds departed inbound entry past 150 s; duplicate inbound
-  ephemerals observed) — open FAIL, not labeled flaky.
-- Release reproducibility NOT PROVEN (dirty tree, no tag, single build).
-- Public testnet absent; cross-host restore untested.
+- DNS seed `seed.chroma.network` / `seed-testnet.chroma.network`は
+  NXDOMAIN。自動bootstrap未実証。
+- Full E2E: 修正後60/61。`e2e_soak_restart_mining_continues`が約50% fail
+  （departed inbound entryが150秒超残る。duplicate inbound ephemeralあり）。
+  open FAIL。flaky扱いなし。
+- Release再現性未証明（dirty tree、tagなし、単一build）。
+- Public testnetなし。cross-host restore未試験。

@@ -83,7 +83,6 @@ impl Mempool {
             return Ok(false);
         }
 
-        // Remove any existing transaction from the same sender with the same nonce
         let sender_address = tx.sender_address();
         let nonce = tx.nonce;
         let existing_keys: Vec<(Hash, usize)> = self

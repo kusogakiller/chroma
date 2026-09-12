@@ -146,7 +146,6 @@ impl Storage {
 
         let storage = Storage { db, path: Some(p) };
 
-        // Check/initialize schema version
         storage.check_or_init_schema_version()?;
 
         Ok(storage)
@@ -176,7 +175,7 @@ impl Storage {
     ///
     /// - If no schema version exists (new database), writes CURRENT_SCHEMA_VERSION.
     /// - If schema version exists and matches CURRENT_SCHEMA_VERSION, proceeds.
-    /// - If schema version is older but compatible, allows (future: could migrate).
+    /// - Older versions are refused (migration not yet implemented).
     /// - If schema version is newer or incompatible, returns error (fail-closed).
     fn check_or_init_schema_version(&self) -> Result<()> {
         match self
@@ -210,11 +209,9 @@ impl Storage {
                         stored_version, CURRENT_SCHEMA_VERSION
                     )));
                 }
-                // Exact match - proceed
                 Ok(())
             }
             None => {
-                // New database - write current schema version
                 let version_bytes = CURRENT_SCHEMA_VERSION.to_le_bytes();
                 self.db
                     .insert(SCHEMA_VERSION_KEY, &version_bytes[..])
@@ -521,7 +518,6 @@ impl Storage {
     pub fn commit_block(&self, block: &Block, tip: &PersistedTip, state: &State) -> Result<()> {
         let mut batch = sled::Batch::default();
 
-        // 1. Block data: header, block, hash↔height mappings
         let height = block.header.height.0;
         let header_key = header_key(height);
         batch.insert(header_key, block.header.encode());
@@ -536,10 +532,8 @@ impl Storage {
         let h2h_reverse = height_to_hash_key(height);
         batch.insert(h2h_reverse, block_hash.as_bytes().to_vec());
 
-        // 2. Tip metadata
         batch.insert(TIP_KEY.to_vec(), tip.encode());
 
-        // 3. Full state: supply + all accounts
         batch.insert(
             SUPPLY_KEY.to_vec(),
             state.total_supply().to_le_bytes().to_vec(),
@@ -795,12 +789,10 @@ mod tests {
             storage.apply_block(&block).unwrap();
         }
 
-        // All headers retrievable
         for h in 0..10u32 {
             assert!(storage.has_header(h).unwrap());
         }
 
-        // All blocks retrievable by hash
         for (i, hash) in hashes.iter().enumerate() {
             let block = storage.get_block_by_hash(hash).unwrap().unwrap();
             assert_eq!(block.header.height.0, i as u32);
@@ -889,11 +881,9 @@ mod tests {
             supply: 5000,
         };
 
-        // Commit block + tip + state atomically
         storage.commit_block(&block, &tip, &state).unwrap();
         storage.flush().unwrap();
 
-        // Verify all three were written
         let retrieved_block = storage.get_block_by_hash(&block_hash).unwrap().unwrap();
         assert_eq!(retrieved_block.header.height.0, 1);
 
@@ -913,7 +903,6 @@ mod tests {
         let storage = Storage::open_temporary().unwrap();
         let addr = test_address(0);
 
-        // Commit state 1
         let block1 = test_block(1);
         let mut state1 = chroma_state::State::new();
         state1.set_account_direct(
@@ -932,7 +921,6 @@ mod tests {
         };
         storage.commit_block(&block1, &tip1, &state1).unwrap();
 
-        // Commit state 2 with different account data
         let block2 = test_block(2);
         let mut state2 = chroma_state::State::new();
         state2.set_account_direct(
@@ -952,7 +940,6 @@ mod tests {
         storage.commit_block(&block2, &tip2, &state2).unwrap();
         storage.flush().unwrap();
 
-        // Verify state 2 is fully in effect
         let tip = storage.get_tip().unwrap().unwrap();
         assert_eq!(tip.height, 2);
 
