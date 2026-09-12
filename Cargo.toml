@@ -11,6 +11,7 @@ members = [
     "crates/chroma-p2p",
     "crates/chroma-wallet",
     "crates/chroma-cli",
+    "crates/chroma-rpc",
 ]
 
 [workspace.package]
@@ -23,3 +24,9 @@ repository = "https://github.com/chroma/chroma"
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# Vendored canonical RandomX (BSD-3-Clause, exact crates.io 1.6.0 bytes):
+# the registry-extracted copy proved unreliable in this environment, and
+# vendoring pins the consensus-critical C++ sources in-tree for audit.
+[patch.crates-io]
+randomx-rs = { path = "vendor/randomx-rs" }

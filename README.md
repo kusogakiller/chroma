@@ -63,6 +63,21 @@ Chromaは現在、初期開発段階です。
 
 コンセンサスやプロトコルレベルの仕様については、[`protocol/SPEC.md`](protocol/SPEC.md) を主要なリファレンスとします。
 
+## 運用 (Operators)
+
+ノードの運用手順は [`OPERATIONS.md`](OPERATIONS.md) を参照してください。
+リリース成果物の記録は [`RELEASE.md`](RELEASE.md)、変更履歴は
+[`CHANGELOG.md`](CHANGELOG.md) にあります。
+
+注意: 現時点で `seed.chroma.network` は名前解決できません (NXDOMAIN)。
+`--connect` なしの自動ブートストラップは未実証です。バックアップは
+停止中コールドバックアップのみ対応です。詳細は `OPERATIONS.md` を参照。
+
+## License (planned)
+
+`Cargo.toml` declares `MIT OR Apache-2.0` as the intended workspace
+license; the final license text files have not been added yet.
+
 ## ライセンス
 
 ライセンスはプロジェクトのライセンス方針確定後に追加されます。

@@ -3,17 +3,19 @@
 //! Assembles blocks from the mempool, creates coinbase transactions,
 //! and performs Proof-of-Work (BLAKE3 placeholder for devnet).
 
+use chroma_block::{Block, BlockHeader};
 use chroma_core::constants::{
-    BLOCK_REWARD_UNITS, TARGET_BLOCK_TIME_SECS,
+    BLOCK_REWARD_UNITS, MAX_FUTURE_TIMESTAMP_OFFSET, TARGET_BLOCK_TIME_SECS,
 };
 use chroma_core::error::{CoreError, Result};
 use chroma_core::hash::Hash;
 use chroma_core::types::{Amount, BlockHeight, CompactTarget, Nonce};
-use chroma_block::{Block, BlockHeader};
 use chroma_tx::Transaction;
 
 /// Maximum number of transactions to include in a block.
-const MAX_BLOCK_TXS: usize = 10_000;
+/// Shared with the P2P miner's selection cap so simulation and assembly
+/// agree on how many mempool entries are considered per round.
+pub const MAX_BLOCK_TXS: usize = 10_000;
 
 /// Block assembly context needed for mining.
 pub struct BlockAssemblyContext {
@@ -29,13 +31,10 @@ pub struct BlockAssemblyContext {
 ///
 /// Creates the coinbase transaction and constructs a candidate block.
 /// Does NOT perform mining (nonce search) — caller must do that.
-pub fn assemble_block(
-    ctx: &BlockAssemblyContext,
-    mempool_txs: &[Transaction],
-) -> Result<Block> {
+pub fn assemble_block(ctx: &BlockAssemblyContext, mempool_txs: &[Transaction]) -> Result<Block> {
     let coinbase = Transaction {
         sender_pubkey: chroma_crypto::schnorr::PublicKey32([0u8; 32]),
-        recipient: ctx.coinbase_recipient.clone(),
+        recipient: ctx.coinbase_recipient,
         amount: Amount(BLOCK_REWARD_UNITS),
         nonce: Nonce(0),
         signature: chroma_crypto::schnorr::Signature64([0u8; 64]),
@@ -49,12 +48,20 @@ pub fn assemble_block(
 
     let tx_merkle_root = Block::compute_tx_merkle_root(&transactions);
 
+    let ideal_timestamp = ctx.previous_timestamp + TARGET_BLOCK_TIME_SECS;
+    let wall_clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let max_timestamp = wall_clock.saturating_add(MAX_FUTURE_TIMESTAMP_OFFSET as u64);
+    let timestamp = std::cmp::min(ideal_timestamp, max_timestamp);
+
     let header = BlockHeader {
         version: 1,
         previous_hash: ctx.previous_hash,
         state_root: ctx.state_root,
         tx_merkle_root,
-        timestamp: ctx.previous_timestamp + TARGET_BLOCK_TIME_SECS,
+        timestamp,
         bits: ctx.bits,
         height: ctx.height,
         nonce: 0,
@@ -69,18 +76,24 @@ pub fn assemble_block(
 /// Mine a block by searching for a valid nonce.
 ///
 /// Iterates the nonce field of the block header until the hash meets the target.
-/// Returns the block with a valid nonce, or an error if no solution found within
-/// the search space.
+/// Returns the block with a valid nonce, or an error if no solution found.
+/// Searches up to `u64::MAX` nonces with periodic progress yield points.
 ///
-/// For devnet (BLAKE3 placeholder): expects to find a solution relatively quickly
-/// with the default difficulty target.
+/// Uses RandomX PoW: input = prev_hash || merkle_root || nonce(LE).
+/// Caller must ensure RandomX context is initialized via `ensure_randomx_for_height`.
 pub fn mine_block(block: &mut Block) -> Result<()> {
     let target = block.header.bits.to_full_target();
 
     for nonce in 0..=u64::MAX {
         block.header.nonce = nonce;
-        let header_hash = block.header.hash();
-        if chroma_crypto::randomx::hash_meets_target(&header_hash, &target) {
+        let pow_result = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            nonce,
+            &[],
+        )
+        .map_err(|e| CoreError::InvalidProofOfWork(format!("RandomX PoW failed: {}", e)))?;
+        if chroma_crypto::randomx::hash_meets_target(&pow_result, &target) {
             return Ok(());
         }
 
@@ -97,13 +110,21 @@ pub fn mine_block(block: &mut Block) -> Result<()> {
 /// Mine a block with timeout.
 ///
 /// Searches for at most `max_nonces` nonce values before returning an error.
+/// Uses RandomX PoW: input = prev_hash || merkle_root || nonce(LE).
+/// Caller must ensure RandomX context is initialized via `ensure_randomx_for_height`.
 pub fn mine_block_with_limit(block: &mut Block, max_nonces: u64) -> Result<()> {
     let target = block.header.bits.to_full_target();
 
     for nonce in 0..max_nonces {
         block.header.nonce = nonce;
-        let header_hash = block.header.hash();
-        if chroma_crypto::randomx::hash_meets_target(&header_hash, &target) {
+        let pow_result = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            nonce,
+            &[],
+        )
+        .map_err(|e| CoreError::InvalidProofOfWork(format!("RandomX PoW failed: {}", e)))?;
+        if chroma_crypto::randomx::hash_meets_target(&pow_result, &target) {
             return Ok(());
         }
     }
@@ -116,7 +137,8 @@ pub fn mine_block_with_limit(block: &mut Block, max_nonces: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_genesis_block;
+    use crate::{build_genesis_block, build_genesis_block_with_bits};
+    use chroma_core::constants::REGTEST_MAGIC;
     use chroma_core::hash::Hash160;
     use chroma_core::types::Address;
 
@@ -127,7 +149,10 @@ mod tests {
     }
 
     fn easy_bits() -> CompactTarget {
-        CompactTarget(0x1f00ffff)
+        // Ultra-easy target for RandomX tests: 0x20ffffff
+        // With RandomX (~1 hash/sec), we need nearly every nonce to succeed.
+        // Target = 0xFFFFFF * 2^232 covers ~99.999% of hash space.
+        CompactTarget(0x20ffffff)
     }
 
     #[test]
@@ -175,6 +200,7 @@ mod tests {
             test_address(),
             Amount(100_000),
             Nonce(0),
+            REGTEST_MAGIC,
         )
         .unwrap();
 
@@ -185,6 +211,12 @@ mod tests {
 
     #[test]
     fn test_mine_block_easy() {
+        use chroma_core::constants::GENESIS_RANDOMX_SEED;
+        use chroma_crypto::randomx::{derive_seed, init_randomx_context};
+        // Initialize RandomX with genesis seed for testing
+        let seed = derive_seed(&Hash::blake3(GENESIS_RANDOMX_SEED));
+        init_randomx_context(&seed).unwrap();
+
         let genesis = build_genesis_block();
         let ctx = BlockAssemblyContext {
             height: BlockHeight(1),
@@ -199,15 +231,26 @@ mod tests {
         mine_block_with_limit(&mut block, 10_000_000).unwrap();
 
         let target = block.header.bits.to_full_target();
-        let hash = block.header.hash();
+        let pow_result = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            block.header.nonce,
+            &[],
+        )
+        .unwrap();
         assert!(
-            chroma_crypto::randomx::hash_meets_target(&hash, &target),
+            chroma_crypto::randomx::hash_meets_target(&pow_result, &target),
             "mined block should meet target"
         );
     }
 
     #[test]
     fn test_mine_block_deterministic_per_nonce() {
+        use chroma_core::constants::GENESIS_RANDOMX_SEED;
+        use chroma_crypto::randomx::{derive_seed, init_randomx_context};
+        let seed = derive_seed(&Hash::blake3(GENESIS_RANDOMX_SEED));
+        init_randomx_context(&seed).unwrap();
+
         let genesis = build_genesis_block();
         let ctx = BlockAssemblyContext {
             height: BlockHeight(1),
@@ -225,8 +268,14 @@ mod tests {
         let mut found_nonce = None;
         for nonce in 0..10_000_000u64 {
             block.header.nonce = nonce;
-            let hash = block.header.hash();
-            if chroma_crypto::randomx::hash_meets_target(&hash, &target) {
+            let pow_result = chroma_crypto::randomx::pow_randomx(
+                &block.header.previous_hash,
+                &block.header.tx_merkle_root,
+                nonce,
+                &[],
+            )
+            .unwrap();
+            if chroma_crypto::randomx::hash_meets_target(&pow_result, &target) {
                 found_nonce = Some(nonce);
                 break;
             }
@@ -234,8 +283,17 @@ mod tests {
 
         let nonce = found_nonce.expect("should find a valid nonce");
         block.header.nonce = nonce;
-        let hash = block.header.hash();
-        assert!(chroma_crypto::randomx::hash_meets_target(&hash, &target));
+        let pow_result = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            nonce,
+            &[],
+        )
+        .unwrap();
+        assert!(chroma_crypto::randomx::hash_meets_target(
+            &pow_result,
+            &target
+        ));
     }
 
     #[test]
@@ -258,6 +316,11 @@ mod tests {
 
     #[test]
     fn test_mine_block_valid_pow() {
+        use chroma_core::constants::GENESIS_RANDOMX_SEED;
+        use chroma_crypto::randomx::{derive_seed, init_randomx_context};
+        let seed = derive_seed(&Hash::blake3(GENESIS_RANDOMX_SEED));
+        init_randomx_context(&seed).unwrap();
+
         let genesis = build_genesis_block();
         let ctx = BlockAssemblyContext {
             height: BlockHeight(1),
@@ -272,6 +335,50 @@ mod tests {
         mine_block_with_limit(&mut block, 10_000_000).unwrap();
 
         let target = block.header.bits.to_full_target();
-        assert!(chroma_crypto::randomx::hash_meets_target(&block.header.hash(), &target));
+        let pow_result = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            block.header.nonce,
+            &[],
+        )
+        .unwrap();
+        assert!(chroma_crypto::randomx::hash_meets_target(
+            &pow_result,
+            &target
+        ));
+    }
+
+    #[test]
+    fn test_mine_block_with_limit_respects_bound() {
+        // Use an impossible target (difficulty 0 = maximum difficulty)
+        // so no nonce will ever match, proving the limit stops the search.
+        // With RandomX (~1 hash/sec), use a small limit to keep the test fast.
+        let genesis = build_genesis_block_with_bits(CompactTarget(0x20ffffff));
+        let impossible_bits = CompactTarget(0x00000001); // nearly impossible
+        let ctx = BlockAssemblyContext {
+            height: BlockHeight(1),
+            previous_hash: genesis.hash(),
+            previous_timestamp: genesis.header.timestamp,
+            state_root: Hash::ZERO,
+            bits: impossible_bits,
+            coinbase_recipient: test_address(),
+        };
+
+        let mut block = assemble_block(&ctx, &[]).unwrap();
+        let start = std::time::Instant::now();
+
+        // With only 5 nonces and an impossible target, this must return Err quickly
+        let result = mine_block_with_limit(&mut block, 5);
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "should fail to find solution with impossible target"
+        );
+        assert!(
+            elapsed.as_millis() < 30_000,
+            "bounded search with 5 nonces should complete in <30s, took {:?}",
+            elapsed
+        );
     }
 }

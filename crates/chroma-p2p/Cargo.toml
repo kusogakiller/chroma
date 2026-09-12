@@ -16,6 +16,14 @@ chroma-state = { path = "../chroma-state" }
 blake3 = "1.5"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+hex = "0.4"
+zeroize = "1.7"
+snow = { version = "0.9", features = ["default"] }
 
 [dev-dependencies]
 proptest = "1.5"
+chroma-wallet = { path = "../chroma-wallet" }
+chroma-tx = { path = "../chroma-tx" }
+chroma-block = { path = "../chroma-block" }
+chroma-state = { path = "../chroma-state" }
+hex = "0.4"

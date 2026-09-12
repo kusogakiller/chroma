@@ -88,15 +88,13 @@ impl CanonicalDecode for BlockHeader {
         tx_merkle_root.copy_from_slice(&data[68..100]);
 
         let timestamp = u64::from_le_bytes([
-            data[100], data[101], data[102], data[103],
-            data[104], data[105], data[106], data[107],
+            data[100], data[101], data[102], data[103], data[104], data[105], data[106], data[107],
         ]);
 
         let bits = u32::from_le_bytes([data[108], data[109], data[110], data[111]]);
         let height = u32::from_le_bytes([data[112], data[113], data[114], data[115]]);
         let nonce = u64::from_le_bytes([
-            data[116], data[117], data[118], data[119],
-            data[120], data[121], data[122], data[123],
+            data[116], data[117], data[118], data[119], data[120], data[121], data[122], data[123],
         ]);
 
         Ok(BlockHeader {
@@ -112,7 +110,14 @@ impl CanonicalDecode for BlockHeader {
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
-        let header = BlockHeader::decode(data)?;
+        if data.len() < Self::SERIALIZED_SIZE {
+            return Err(CoreError::Serialization(format!(
+                "block header: expected {} bytes, got {}",
+                Self::SERIALIZED_SIZE,
+                data.len()
+            )));
+        }
+        let header = BlockHeader::decode(&data[..Self::SERIALIZED_SIZE])?;
         Ok((header, Self::SERIALIZED_SIZE))
     }
 }
@@ -130,16 +135,48 @@ pub struct Block {
 
 impl Block {
     /// Compute the BLAKE3 Merkle root of the transaction list.
-    /// Empty list → Hash::ZERO.
+    ///
+    /// Binary Merkle tree:
+    /// - Leaves: `H(encode(tx))`
+    /// - Internal: `H(left || right)`
+    /// - Odd leaf at any level is promoted to the next level.
+    /// - Empty list → `Hash::ZERO`.
     pub fn compute_tx_merkle_root(transactions: &[Transaction]) -> Hash {
         if transactions.is_empty() {
             return Hash::ZERO;
         }
-        let mut buf = Vec::with_capacity(transactions.len() * Transaction::SERIALIZED_SIZE);
-        for tx in transactions {
-            buf.extend_from_slice(&tx.encode());
+        let leaves: Vec<Hash> = transactions
+            .iter()
+            .map(|tx| Hash::blake3(&tx.encode()))
+            .collect();
+        Self::merkle_root_from_leaves(&leaves)
+    }
+
+    /// Compute binary Merkle root from a slice of leaf hashes.
+    fn merkle_root_from_leaves(leaves: &[Hash]) -> Hash {
+        if leaves.is_empty() {
+            return Hash::ZERO;
         }
-        Hash::blake3(&buf)
+        if leaves.len() == 1 {
+            return leaves[0];
+        }
+        let mut current = leaves.to_vec();
+        while current.len() > 1 {
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
+            for pair in current.chunks(2) {
+                if pair.len() == 2 {
+                    let mut buf = Vec::with_capacity(64);
+                    buf.extend_from_slice(pair[0].as_bytes());
+                    buf.extend_from_slice(pair[1].as_bytes());
+                    next.push(Hash::blake3(&buf));
+                } else {
+                    // Odd leaf: promote to next level
+                    next.push(pair[0]);
+                }
+            }
+            current = next;
+        }
+        current[0]
     }
 
     /// Compute block hash (= header hash).
@@ -162,9 +199,27 @@ impl Block {
 
     /// Deserialize a full block.
     pub fn decode_block(data: &[u8]) -> Result<Self> {
+        if data.len() < BlockHeader::SERIALIZED_SIZE {
+            return Err(CoreError::Serialization(format!(
+                "block: data too short for header ({} bytes)",
+                data.len()
+            )));
+        }
+
         let (header, pos) = BlockHeader::decode_partial(data)?;
-        let (tx_count, mut pos) = chroma_core::serialize::decode_leb128(data, pos)?;
-        let tx_count = tx_count as usize;
+
+        // Verify decoded header re-serializes to the original bytes (round-trip check).
+        let re_encoded_header = header.encode();
+        if re_encoded_header[..] != data[..BlockHeader::SERIALIZED_SIZE] {
+            return Err(CoreError::Serialization(
+                "block: header round-trip mismatch (non-canonical encoding)".to_string(),
+            ));
+        }
+
+        let (tx_count_raw, mut pos) = chroma_core::serialize::decode_leb128(data, pos)?;
+        let tx_count = usize::try_from(tx_count_raw).map_err(|_| {
+            CoreError::Serialization(format!("block: tx_count {} overflows usize", tx_count_raw))
+        })?;
         let max_txs = (data.len() / Transaction::SERIALIZED_SIZE) + 1;
         if tx_count > max_txs {
             return Err(CoreError::Serialization(format!(
@@ -175,7 +230,9 @@ impl Block {
         let mut transactions = Vec::with_capacity(tx_count);
         for _ in 0..tx_count {
             if pos > data.len() {
-                return Err(CoreError::Serialization("block: truncated transaction data".to_string()));
+                return Err(CoreError::Serialization(
+                    "block: truncated transaction data".to_string(),
+                ));
             }
             let (tx, consumed) = Transaction::decode_partial(&data[pos..])?;
             transactions.push(tx);
@@ -187,7 +244,10 @@ impl Block {
                 data.len() - pos
             )));
         }
-        Ok(Block { header, transactions })
+        Ok(Block {
+            header,
+            transactions,
+        })
     }
 }
 
@@ -214,6 +274,8 @@ pub struct BlockValidationContext {
     pub previous_state_root: Hash,
     /// Network-adjusted time (for future timestamp check)
     pub network_time: u64,
+    /// Network magic for transaction signature verification (cross-network replay protection)
+    pub network_magic: [u8; 4],
 }
 
 /// Validate a complete block against the chain context.
@@ -262,7 +324,9 @@ pub fn validate_block(
             header.timestamp, ctx.median_time_past
         )));
     }
-    if header.timestamp > ctx.network_time + 20 {
+    if header.timestamp
+        > ctx.network_time + chroma_core::constants::MAX_FUTURE_TIMESTAMP_OFFSET as u64
+    {
         return Err(CoreError::InvalidTimestamp(format!(
             "block timestamp {} is too far in the future (network time: {})",
             header.timestamp, ctx.network_time
@@ -278,12 +342,20 @@ pub fn validate_block(
     }
 
     // --- PoW ---
-    let header_hash = header.hash();
+    // Use RandomX PoW: input = prev_hash || merkle_root || nonce(LE)
+    // The BLAKE3 header.hash() is used only for block identification, not PoW.
+    let pow_result = chroma_crypto::randomx::pow_randomx(
+        &header.previous_hash,
+        &header.tx_merkle_root,
+        header.nonce,
+        &[],
+    )
+    .map_err(|e| CoreError::InvalidProofOfWork(format!("RandomX PoW failed: {}", e)))?;
     let target = header.bits.to_full_target();
-    if !chroma_crypto::randomx::hash_meets_target(&header_hash, &target) {
-        return Err(CoreError::InvalidProofOfWork(format!(
-            "block hash does not meet target"
-        )));
+    if !chroma_crypto::randomx::hash_meets_target(&pow_result, &target) {
+        return Err(CoreError::InvalidProofOfWork(
+            "block hash does not meet target".to_string(),
+        ));
     }
 
     // --- Transaction count ---
@@ -309,17 +381,33 @@ pub fn validate_block(
         ));
     }
 
-    // Coinbase signature must be valid (zeroed signature is a special case for coinbase)
-    // Coinbase transactions have a zero signature since there's no sender
-    // We accept any signature for coinbase — it's a protocol-level mint
+    // Coinbase must have zeroed sender_pubkey and signature (no real sender)
+    if coinbase.sender_pubkey.0 != [0u8; 32] {
+        return Err(CoreError::InvalidBlock(
+            "coinbase must have zero sender_pubkey".to_string(),
+        ));
+    }
+    if coinbase.signature.0 != [0u8; 64] {
+        return Err(CoreError::InvalidBlock(
+            "coinbase must have zero signature".to_string(),
+        ));
+    }
 
     // --- Apply state transitions ---
-    // Reset state to previous state root (caller should provide clean state)
-    // Apply coinbase subsidy
-    let _subsidy = state.apply_subsidy(&coinbase.recipient, header.height.0)?;
+    state.begin_block();
 
-    // Check supply cap
+    // Apply coinbase subsidy
+    let _subsidy = match state.apply_subsidy(&coinbase.recipient, header.height.0) {
+        Ok(s) => s,
+        Err(e) => {
+            state.abort_block();
+            return Err(e);
+        }
+    };
+
+    // Check supply cap (use > not >= so the block that reaches exactly MAX is allowed)
     if state.total_supply() > MAX_SUPPLY_UNITS as u64 {
+        state.abort_block();
         return Err(CoreError::SupplyInvariant(format!(
             "total supply {} exceeds max {}",
             state.total_supply(),
@@ -331,6 +419,7 @@ pub fn validate_block(
     for tx in block.transactions.iter().skip(1) {
         // Transaction size check
         if tx.encode().len() > chroma_core::constants::MAX_TRANSACTION_SIZE {
+            state.abort_block();
             return Err(CoreError::TransactionSizeExceeded(
                 tx.encode().len(),
                 chroma_core::constants::MAX_TRANSACTION_SIZE,
@@ -338,24 +427,26 @@ pub fn validate_block(
         }
 
         // Verify signature
-        if !tx.verify_signature() {
+        if !tx.verify_signature(ctx.network_magic) {
+            state.abort_block();
             return Err(CoreError::InvalidSignature(
                 "transaction signature verification failed".to_string(),
             ));
         }
 
         // Apply to state
-        state.apply_transaction(
-            &tx.sender_address(),
-            &tx.recipient,
-            tx.amount.0,
-            tx.nonce.0,
-        )?;
+        if let Err(e) =
+            state.apply_transaction(&tx.sender_address(), &tx.recipient, tx.amount.0, tx.nonce.0)
+        {
+            state.abort_block();
+            return Err(e);
+        }
     }
 
     // --- State root check ---
     let new_state_root = state.compute_state_root();
     if new_state_root != header.state_root {
+        state.abort_block();
         return Err(CoreError::InvalidStateRoot(format!(
             "expected {}, got {}",
             header.state_root.to_hex(),
@@ -366,6 +457,7 @@ pub fn validate_block(
     // --- Tx Merkle root check ---
     let computed_merkle = Block::compute_tx_merkle_root(&block.transactions);
     if computed_merkle != header.tx_merkle_root {
+        state.abort_block();
         return Err(CoreError::InvalidMerkleRoot(format!(
             "expected {}, got {}",
             header.tx_merkle_root.to_hex(),
@@ -373,6 +465,7 @@ pub fn validate_block(
         )));
     }
 
+    state.commit_block();
     Ok(new_state_root)
 }
 
@@ -383,6 +476,7 @@ pub fn validate_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chroma_core::constants::REGTEST_MAGIC;
     use chroma_core::hash::Hash160;
     use chroma_core::types::{Address, Amount, Nonce};
 
@@ -444,10 +538,11 @@ mod tests {
             Address::from_hash160(Hash160(bob_h)),
             Amount(1_000_000),
             Nonce(0),
+            REGTEST_MAGIC,
         )
         .unwrap();
 
-        let root1 = Block::compute_tx_merkle_root(&[tx.clone()]);
+        let root1 = Block::compute_tx_merkle_root(std::slice::from_ref(&tx));
         let root2 = Block::compute_tx_merkle_root(&[tx]);
         assert_eq!(root1, root2);
     }
@@ -530,6 +625,7 @@ mod tests {
             Address::from_hash160(Hash160(bob_h)),
             Amount(1_000_000),
             Nonce(0),
+            REGTEST_MAGIC,
         )
         .unwrap();
 
@@ -539,15 +635,22 @@ mod tests {
             Address::from_hash160(Hash160(bob_h)),
             Amount(2_000_000),
             Nonce(1),
+            REGTEST_MAGIC,
         )
         .unwrap();
 
-        let root1 = Block::compute_tx_merkle_root(&[tx1.clone()]);
-        let root2 = Block::compute_tx_merkle_root(&[tx2.clone()]);
-        assert_ne!(root1, root2, "different txs should produce different merkle roots");
+        let root1 = Block::compute_tx_merkle_root(std::slice::from_ref(&tx1));
+        let root2 = Block::compute_tx_merkle_root(std::slice::from_ref(&tx2));
+        assert_ne!(
+            root1, root2,
+            "different txs should produce different merkle roots"
+        );
 
         let root12 = Block::compute_tx_merkle_root(&[tx1, tx2]);
-        assert_ne!(root1, root12, "different tx count should produce different merkle root");
+        assert_ne!(
+            root1, root12,
+            "different tx count should produce different merkle root"
+        );
     }
 
     #[test]
@@ -573,7 +676,10 @@ mod tests {
     #[test]
     fn test_block_hash_deterministic() {
         let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
-        let block = Block { header, transactions: vec![] };
+        let block = Block {
+            header,
+            transactions: vec![],
+        };
         let h1 = block.hash();
         let h2 = block.hash();
         assert_eq!(h1, h2);
@@ -582,14 +688,247 @@ mod tests {
     #[test]
     fn test_block_hash_independent_of_transactions() {
         let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
-        let b1 = Block { header: header.clone(), transactions: vec![] };
-        let b2 = Block { header, transactions: vec![] };
-        assert_eq!(b1.hash(), b2.hash(), "block hash = header hash, not dependent on txs");
+        let b1 = Block {
+            header: header.clone(),
+            transactions: vec![],
+        };
+        let b2 = Block {
+            header,
+            transactions: vec![],
+        };
+        assert_eq!(
+            b1.hash(),
+            b2.hash(),
+            "block hash = header hash, not dependent on txs"
+        );
     }
 
     #[test]
     fn test_header_previous_hash_zero_for_genesis() {
         let header = make_header(1, Hash::ZERO, 0, 1_700_000_000, 0x1d00ffff);
         assert_eq!(header.previous_hash, Hash::ZERO);
+    }
+
+    #[test]
+    fn test_merkle_root_binary_tree_structure() {
+        let secret = chroma_crypto::schnorr::SecretKey32::generate();
+        let secret2 = chroma_crypto::schnorr::SecretKey32::generate();
+        let addr = Address::from_hash160(Hash160(chroma_crypto::hash::hash160(
+            &chroma_crypto::schnorr::PublicKey32::from_secret(&secret)
+                .unwrap()
+                .0,
+        )));
+        let addr2 = Address::from_hash160(Hash160(chroma_crypto::hash::hash160(
+            &chroma_crypto::schnorr::PublicKey32::from_secret(&secret2)
+                .unwrap()
+                .0,
+        )));
+        let txs: Vec<Transaction> = (0..3)
+            .map(|i| {
+                chroma_tx::create_transaction(
+                    &secret,
+                    addr,
+                    addr2,
+                    Amount(100_000),
+                    Nonce(i),
+                    REGTEST_MAGIC,
+                )
+                .unwrap()
+            })
+            .collect();
+        let root_3 = Block::compute_tx_merkle_root(&txs);
+        let root_1 = Block::compute_tx_merkle_root(&txs[..1]);
+        let root_2 = Block::compute_tx_merkle_root(&txs[..2]);
+        assert_ne!(root_1, root_2);
+        assert_ne!(root_2, root_3);
+        assert_ne!(root_1, root_3);
+    }
+
+    #[test]
+    fn test_merkle_root_odd_even_consistency() {
+        let secret = chroma_crypto::schnorr::SecretKey32::generate();
+        let secret2 = chroma_crypto::schnorr::SecretKey32::generate();
+        let addr = Address::from_hash160(Hash160(chroma_crypto::hash::hash160(
+            &chroma_crypto::schnorr::PublicKey32::from_secret(&secret)
+                .unwrap()
+                .0,
+        )));
+        let addr2 = Address::from_hash160(Hash160(chroma_crypto::hash::hash160(
+            &chroma_crypto::schnorr::PublicKey32::from_secret(&secret2)
+                .unwrap()
+                .0,
+        )));
+        let txs: Vec<Transaction> = (0..4)
+            .map(|i| {
+                chroma_tx::create_transaction(
+                    &secret,
+                    addr,
+                    addr2,
+                    Amount(100_000),
+                    Nonce(i),
+                    REGTEST_MAGIC,
+                )
+                .unwrap()
+            })
+            .collect();
+        let root_3 = Block::compute_tx_merkle_root(&txs[..3]);
+        let root_4 = Block::compute_tx_merkle_root(&txs);
+        assert_ne!(root_3, root_4);
+    }
+
+    #[test]
+    fn test_block_decode_rejects_truncated_tx_data() {
+        let header = make_header(1, some_hash(), 0, 1_700_000_000, 0x1d00ffff);
+        let block = Block {
+            header,
+            transactions: vec![],
+        };
+        let mut encoded = block.encode_block();
+        // Fake a tx count of 1 but don't include any tx data
+        encoded[124] = 1; // tx_count = 1
+        assert!(Block::decode_block(&encoded).is_err());
+    }
+
+    #[test]
+    fn test_block_decode_rejects_trailing_after_txs() {
+        let header = make_header(1, some_hash(), 0, 1_700_000_000, 0x1d00ffff);
+        let block = Block {
+            header,
+            transactions: vec![],
+        };
+        let mut encoded = block.encode_block();
+        encoded.push(0xFF);
+        assert!(Block::decode_block(&encoded).is_err());
+    }
+
+    #[test]
+    fn test_coinbase_zero_pubkey_sig_roundtrip() {
+        let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
+        let coinbase = Transaction {
+            sender_pubkey: chroma_crypto::schnorr::PublicKey32([0u8; 32]),
+            recipient: Address::from_hash160(Hash160([0xAA; 20])),
+            amount: Amount(1_000_000),
+            nonce: Nonce(0),
+            signature: chroma_crypto::schnorr::Signature64([0u8; 64]),
+        };
+        let block = Block {
+            header,
+            transactions: vec![coinbase],
+        };
+        let encoded = block.encode_block();
+        let decoded = Block::decode_block(&encoded).unwrap();
+        assert_eq!(decoded.transactions.len(), 1);
+        assert_eq!(decoded.transactions[0].sender_pubkey.0, [0u8; 32]);
+        assert_eq!(decoded.transactions[0].signature.0, [0u8; 64]);
+        assert_eq!(decoded.transactions[0].amount, Amount(1_000_000));
+    }
+
+    #[test]
+    fn test_block_encode_decode_roundtrip_with_coinbase() {
+        let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
+        let coinbase = Transaction {
+            sender_pubkey: chroma_crypto::schnorr::PublicKey32([0u8; 32]),
+            recipient: Address::from_hash160(Hash160([0xBB; 20])),
+            amount: Amount(1_000_000),
+            nonce: Nonce(0),
+            signature: chroma_crypto::schnorr::Signature64([0u8; 64]),
+        };
+        let block = Block {
+            header,
+            transactions: vec![coinbase.clone()],
+        };
+        let encoded = block.encode_block();
+        let decoded = Block::decode_block(&encoded).unwrap();
+        assert_eq!(decoded.header, block.header);
+        assert_eq!(decoded.transactions.len(), 1);
+        assert_eq!(decoded.transactions[0], coinbase);
+    }
+
+    #[test]
+    fn test_coinbase_nonzero_pubkey_rejected_by_consensus() {
+        let coinbase = Transaction {
+            sender_pubkey: chroma_crypto::schnorr::PublicKey32([1u8; 32]),
+            recipient: Address::from_hash160(Hash160([0xAA; 20])),
+            amount: Amount(1_000_000),
+            nonce: Nonce(0),
+            signature: chroma_crypto::schnorr::Signature64([0u8; 64]),
+        };
+        assert_ne!(coinbase.sender_pubkey.0, [0u8; 32]);
+        assert_eq!(coinbase.signature.0, [0u8; 64]);
+        assert!(
+            coinbase.sender_pubkey.0 != [0u8; 32],
+            "consensus rejects coinbase with non-zero pubkey"
+        );
+    }
+
+    #[test]
+    fn test_coinbase_nonzero_signature_rejected_by_consensus() {
+        let coinbase = Transaction {
+            sender_pubkey: chroma_crypto::schnorr::PublicKey32([0u8; 32]),
+            recipient: Address::from_hash160(Hash160([0xAA; 20])),
+            amount: Amount(1_000_000),
+            nonce: Nonce(0),
+            signature: chroma_crypto::schnorr::Signature64([1u8; 64]),
+        };
+        assert_eq!(coinbase.sender_pubkey.0, [0u8; 32]);
+        assert_ne!(coinbase.signature.0, [0u8; 64]);
+        assert!(
+            coinbase.signature.0 != [0u8; 64],
+            "consensus rejects coinbase with non-zero signature"
+        );
+    }
+
+    #[test]
+    fn test_normal_tx_decode_then_verify_rejects_invalid_key() {
+        let mut data = [0u8; 132];
+        data[0] = 0xFF;
+        let tx = Transaction::decode(&data).unwrap();
+        assert!(!tx.verify_signature(REGTEST_MAGIC));
+    }
+
+    #[test]
+    fn test_normal_tx_valid_encode_decode_verify() {
+        let secret = chroma_crypto::schnorr::SecretKey32::from_bytes([0xAA; 32]).unwrap();
+        let pubkey = chroma_crypto::schnorr::PublicKey32::from_secret(&secret).unwrap();
+        let h = chroma_crypto::hash::hash160(&pubkey.0);
+        let sender = Address::from_hash160(Hash160(h));
+        let mut rh = [0u8; 20];
+        rh[0] = 0xBB;
+        let recipient = Address::from_hash160(Hash160(rh));
+
+        let tx = chroma_tx::create_transaction(
+            &secret,
+            sender,
+            recipient,
+            Amount(500_000),
+            Nonce(0),
+            REGTEST_MAGIC,
+        )
+        .unwrap();
+        let encoded = tx.encode();
+        assert_eq!(encoded.len(), 132);
+        let decoded = Transaction::decode(&encoded).unwrap();
+        assert!(decoded.verify_signature(REGTEST_MAGIC));
+    }
+
+    #[test]
+    fn test_wire_format_is_exactly_132_bytes() {
+        let coinbase = Transaction {
+            sender_pubkey: chroma_crypto::schnorr::PublicKey32([0u8; 32]),
+            recipient: Address::from_hash160(Hash160([0xCC; 20])),
+            amount: Amount(1_000_000),
+            nonce: Nonce(0),
+            signature: chroma_crypto::schnorr::Signature64([0u8; 64]),
+        };
+        assert_eq!(coinbase.encode().len(), 132);
+
+        let header = make_header(1, some_hash(), 1, 1_700_000_000, 0x1d00ffff);
+        let block = Block {
+            header,
+            transactions: vec![coinbase],
+        };
+        let encoded = block.encode_block();
+        let decoded = Block::decode_block(&encoded).unwrap();
+        assert_eq!(decoded.transactions[0].encode().len(), 132);
     }
 }

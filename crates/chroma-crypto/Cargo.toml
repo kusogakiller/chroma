@@ -3,7 +3,7 @@ name = "chroma-crypto"
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-description = "Chroma cryptography: Schnorr, BLAKE3, Bech32m, RandomX bindings"
+description = "Chroma cryptography: Schnorr, BLAKE3, Bech32m, canonical RandomX bindings"
 
 [dependencies]
 chroma-core = { path = "../chroma-core" }
@@ -15,6 +15,9 @@ secp256k1 = { version = "0.27", features = ["rand", "rand-std"] }
 bech32 = "0.11"
 thiserror = "1.0"
 getrandom = "0.2"
+curve25519-dalek = "4"
+randomx-rs = "1.6"
+snow = { version = "0.9", features = ["default"] }
 
 [dev-dependencies]
 proptest = "1.5"

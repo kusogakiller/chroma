@@ -69,7 +69,9 @@ pub fn decode_leb128(data: &[u8], offset: usize) -> Result<(u64, usize)> {
 
         shift += 7;
         if shift >= 64 {
-            return Err(CoreError::Serialization("LEB128 value too large".to_string()));
+            return Err(CoreError::Serialization(
+                "LEB128 value too large".to_string(),
+            ));
         }
     }
 
@@ -105,37 +107,51 @@ pub fn encode_u64_le(value: u64) -> [u8; 8] {
 
 pub fn encode_u128_le(value: u128) -> [u8; 16] {
     let mut bytes = [0u8; 16];
-    for i in 0..16 {
-        bytes[i] = ((value >> (i * 8)) & 0xFF) as u8;
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = ((value >> (i * 8)) & 0xFF) as u8;
     }
     bytes
 }
 
 /// Decode a little-endian fixed-width integer
 pub fn decode_u16_le(data: &[u8]) -> Result<u16> {
-    if data.len() < 2 {
-        return Err(CoreError::Serialization("u16 decoding: not enough bytes".to_string()));
+    if data.len() != 2 {
+        return Err(CoreError::Serialization(format!(
+            "u16 decoding: expected 2 bytes, got {}",
+            data.len()
+        )));
     }
     Ok(u16::from_le_bytes([data[0], data[1]]))
 }
 
 pub fn decode_u32_le(data: &[u8]) -> Result<u32> {
-    if data.len() < 4 {
-        return Err(CoreError::Serialization("u32 decoding: not enough bytes".to_string()));
+    if data.len() != 4 {
+        return Err(CoreError::Serialization(format!(
+            "u32 decoding: expected 4 bytes, got {}",
+            data.len()
+        )));
     }
     Ok(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
 }
 
 pub fn decode_u64_le(data: &[u8]) -> Result<u64> {
-    if data.len() < 8 {
-        return Err(CoreError::Serialization("u64 decoding: not enough bytes".to_string()));
+    if data.len() != 8 {
+        return Err(CoreError::Serialization(format!(
+            "u64 decoding: expected 8 bytes, got {}",
+            data.len()
+        )));
     }
-    Ok(u64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]))
+    Ok(u64::from_le_bytes([
+        data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+    ]))
 }
 
 pub fn decode_u128_le(data: &[u8]) -> Result<u128> {
-    if data.len() < 16 {
-        return Err(CoreError::Serialization("u128 decoding: not enough bytes".to_string()));
+    if data.len() != 16 {
+        return Err(CoreError::Serialization(format!(
+            "u128 decoding: expected 16 bytes, got {}",
+            data.len()
+        )));
     }
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&data[..16]);
@@ -180,7 +196,13 @@ impl CanonicalDecode for u16 {
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
-        let val = decode_u16_le(data)?;
+        if data.len() < 2 {
+            return Err(CoreError::Serialization(format!(
+                "u16 decoding: expected 2 bytes, got {}",
+                data.len()
+            )));
+        }
+        let val = decode_u16_le(&data[..2])?;
         Ok((val, 2))
     }
 }
@@ -197,7 +219,13 @@ impl CanonicalDecode for u32 {
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
-        let val = decode_u32_le(data)?;
+        if data.len() < 4 {
+            return Err(CoreError::Serialization(format!(
+                "u32 decoding: expected 4 bytes, got {}",
+                data.len()
+            )));
+        }
+        let val = decode_u32_le(&data[..4])?;
         Ok((val, 4))
     }
 }
@@ -214,7 +242,13 @@ impl CanonicalDecode for u64 {
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
-        let val = decode_u64_le(data)?;
+        if data.len() < 8 {
+            return Err(CoreError::Serialization(format!(
+                "u64 decoding: expected 8 bytes, got {}",
+                data.len()
+            )));
+        }
+        let val = decode_u64_le(&data[..8])?;
         Ok((val, 8))
     }
 }
@@ -231,7 +265,13 @@ impl CanonicalDecode for u128 {
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
-        let val = decode_u128_le(data)?;
+        if data.len() < 16 {
+            return Err(CoreError::Serialization(format!(
+                "u128 decoding: expected 16 bytes, got {}",
+                data.len()
+            )));
+        }
+        let val = decode_u128_le(&data[..16])?;
         Ok((val, 16))
     }
 }
@@ -245,12 +285,17 @@ impl CanonicalEncode for bool {
 impl CanonicalDecode for bool {
     fn decode(data: &[u8]) -> Result<Self> {
         if data.len() != 1 {
-            return Err(CoreError::Serialization("bool: expected 1 byte".to_string()));
+            return Err(CoreError::Serialization(
+                "bool: expected 1 byte".to_string(),
+            ));
         }
         match data[0] {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(CoreError::Serialization(format!("bool: invalid value {}", data[0]))),
+            _ => Err(CoreError::Serialization(format!(
+                "bool: invalid value {}",
+                data[0]
+            ))),
         }
     }
 
@@ -261,7 +306,10 @@ impl CanonicalDecode for bool {
         match data[0] {
             0 => Ok((false, 1)),
             1 => Ok((true, 1)),
-            _ => Err(CoreError::Serialization(format!("bool: invalid value {}", data[0]))),
+            _ => Err(CoreError::Serialization(format!(
+                "bool: invalid value {}",
+                data[0]
+            ))),
         }
     }
 }
@@ -276,11 +324,15 @@ pub fn encode_bytes_leb128(data: &[u8]) -> Vec<u8> {
 /// Decode a byte slice with LEB128 length prefix
 pub fn decode_bytes_leb128(data: &[u8], offset: usize) -> Result<(Vec<u8>, usize)> {
     let (len, pos) = decode_leb128(data, offset)?;
-    let len = len as usize;
-    let end = pos.checked_add(len)
+    let len = usize::try_from(len)
+        .map_err(|_| CoreError::Serialization(format!("bytes: length {} overflows usize", len)))?;
+    let end = pos
+        .checked_add(len)
         .ok_or_else(|| CoreError::Serialization("bytes: length overflow".to_string()))?;
     if end > data.len() {
-        return Err(CoreError::Serialization("bytes: declared length exceeds data".to_string()));
+        return Err(CoreError::Serialization(
+            "bytes: declared length exceeds data".to_string(),
+        ));
     }
     let result = data[pos..end].to_vec();
     Ok((result, end))
@@ -313,12 +365,14 @@ impl CanonicalEncode for String {
 impl CanonicalDecode for String {
     fn decode(data: &[u8]) -> Result<Self> {
         let (bytes, _) = decode_bytes_leb128(data, 0)?;
-        String::from_utf8(bytes).map_err(|e| CoreError::Serialization(format!("invalid UTF-8: {}", e)))
+        String::from_utf8(bytes)
+            .map_err(|e| CoreError::Serialization(format!("invalid UTF-8: {}", e)))
     }
 
     fn decode_partial(data: &[u8]) -> Result<(Self, usize)> {
         let (bytes, pos) = decode_bytes_leb128(data, 0)?;
-        let s = String::from_utf8(bytes).map_err(|e| CoreError::Serialization(format!("invalid UTF-8: {}", e)))?;
+        let s = String::from_utf8(bytes)
+            .map_err(|e| CoreError::Serialization(format!("invalid UTF-8: {}", e)))?;
         Ok((s, pos))
     }
 }

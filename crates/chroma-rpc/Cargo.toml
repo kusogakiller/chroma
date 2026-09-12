@@ -1,0 +1,28 @@
+[package]
+name = "chroma-rpc"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+description = "Chroma JSON-RPC server (v0.2)"
+
+[dependencies]
+chroma-core = { path = "../chroma-core" }
+chroma-block = { path = "../chroma-block" }
+chroma-storage = { path = "../chroma-storage" }
+chroma-consensus = { path = "../chroma-consensus" }
+chroma-tx = { path = "../chroma-tx" }
+chroma-p2p = { path = "../chroma-p2p" }
+chroma-crypto = { path = "../chroma-crypto" }
+axum = "0.7"
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.5", features = ["cors", "timeout", "limit"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+tracing = "0.1"
+subtle = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+reqwest = { version = "0.12", features = ["json"] }

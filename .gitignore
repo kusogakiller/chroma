@@ -1,2 +1,5 @@
 **/target/
 **/test_dbs/
+# Generated node data from manual testing (sled files, never release source).
+manual-test/
+chroma_data/

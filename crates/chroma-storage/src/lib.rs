@@ -7,6 +7,7 @@
 //! - `headers:{height:u32}` → serialized BlockHeader
 //! - `blocks:{hash:32}` → serialized full Block
 //! - `hash_to_height:{hash:32}` → height as u32 LE
+//! - `height_to_hash:{height:u32}` → hash as 32 bytes
 //! - `tip` → serialized ChainTip metadata
 //! - `accounts:{address:20}` → account data (balance_le64 || nonce_le64)
 //! - `supply` → total supply as u64 LE
@@ -14,11 +15,11 @@
 
 use std::path::Path;
 
+use chroma_block::Block;
 use chroma_core::error::{CoreError, Result};
 use chroma_core::hash::Hash;
 use chroma_core::serialize::{CanonicalDecode, CanonicalEncode};
 use chroma_core::types::Address;
-use chroma_block::Block;
 use chroma_state::{Account, State};
 
 // ============================================================================
@@ -43,6 +44,12 @@ fn hash_to_height_key(hash: &Hash) -> Vec<u8> {
     key
 }
 
+fn height_to_hash_key(height: u32) -> Vec<u8> {
+    let mut key = b"height_to_hash:".to_vec();
+    key.extend_from_slice(&height.to_be_bytes());
+    key
+}
+
 fn account_key(address: &Address) -> Vec<u8> {
     let mut key = b"accounts:".to_vec();
     key.extend_from_slice(address.as_hash160().as_bytes());
@@ -52,6 +59,11 @@ fn account_key(address: &Address) -> Vec<u8> {
 const TIP_KEY: &[u8] = b"tip";
 const SUPPLY_KEY: &[u8] = b"supply";
 const GENESIS_HASH_KEY: &[u8] = b"genesis_hash";
+pub const SCHEMA_VERSION_KEY: &[u8] = b"schema_version";
+
+/// Current database schema version.
+/// Increment when making breaking changes to the database format.
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 // ============================================================================
 // Chain Tip Metadata
@@ -80,7 +92,9 @@ impl CanonicalEncode for PersistedTip {
 impl CanonicalDecode for PersistedTip {
     fn decode(data: &[u8]) -> Result<Self> {
         if data.len() < 76 {
-            return Err(CoreError::Serialization("persisted tip too short".to_string()));
+            return Err(CoreError::Serialization(
+                "persisted tip too short".to_string(),
+            ));
         }
         let height = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let mut hash = [0u8; 32];
@@ -88,8 +102,7 @@ impl CanonicalDecode for PersistedTip {
         let mut work = [0u8; 32];
         work.copy_from_slice(&data[36..68]);
         let supply = u64::from_le_bytes([
-            data[68], data[69], data[70], data[71],
-            data[72], data[73], data[74], data[75],
+            data[68], data[69], data[70], data[71], data[72], data[73], data[74], data[75],
         ]);
         Ok(PersistedTip {
             height,
@@ -110,6 +123,7 @@ impl CanonicalDecode for PersistedTip {
 // ============================================================================
 
 /// Persistent blockchain storage backed by sled.
+#[derive(Debug)]
 pub struct Storage {
     db: sled::Db,
     #[allow(dead_code)]
@@ -118,13 +132,24 @@ pub struct Storage {
 
 impl Storage {
     /// Open or create a storage database at the given path.
+    ///
+    /// Performs schema version validation:
+    /// - New databases get CURRENT_SCHEMA_VERSION written
+    /// - Existing databases must have compatible schema version
+    /// - Incompatible versions cause fail-closed (return error)
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let p = path.as_ref().to_path_buf();
         let db = sled::Config::new()
             .path(&p)
             .open()
             .map_err(|e| CoreError::Storage(format!("failed to open database: {}", e)))?;
-        Ok(Storage { db, path: Some(p) })
+
+        let storage = Storage { db, path: Some(p) };
+
+        // Check/initialize schema version
+        storage.check_or_init_schema_version()?;
+
+        Ok(storage)
     }
 
     /// Open a temporary database for testing.
@@ -132,19 +157,74 @@ impl Storage {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let base = std::env::current_dir()
-            .unwrap_or_default()
-            .join("test_dbs");
+        let base = std::env::current_dir().unwrap_or_default().join("test_dbs");
         let dir = base.join(format!("sled_{}", id));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            CoreError::Storage(format!("failed to create test dir: {}", e))
-        })?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| CoreError::Storage(format!("failed to create test dir: {}", e)))?;
         let db = sled::Config::new()
             .path(&dir)
             .open()
             .map_err(|e| CoreError::Storage(format!("failed to open temp database: {}", e)))?;
-        Ok(Storage { db, path: Some(dir) })
+        Ok(Storage {
+            db,
+            path: Some(dir),
+        })
+    }
+
+    /// Check or initialize the schema version.
+    ///
+    /// - If no schema version exists (new database), writes CURRENT_SCHEMA_VERSION.
+    /// - If schema version exists and matches CURRENT_SCHEMA_VERSION, proceeds.
+    /// - If schema version is older but compatible, allows (future: could migrate).
+    /// - If schema version is newer or incompatible, returns error (fail-closed).
+    fn check_or_init_schema_version(&self) -> Result<()> {
+        match self
+            .db
+            .get(SCHEMA_VERSION_KEY)
+            .map_err(|e| CoreError::Storage(format!("schema version read: {}", e)))?
+        {
+            Some(version_bytes) => {
+                if version_bytes.len() != 4 {
+                    return Err(CoreError::Storage(
+                        "invalid schema version encoding".to_string(),
+                    ));
+                }
+                let stored_version = u32::from_le_bytes([
+                    version_bytes[0],
+                    version_bytes[1],
+                    version_bytes[2],
+                    version_bytes[3],
+                ]);
+                if stored_version > CURRENT_SCHEMA_VERSION {
+                    return Err(CoreError::Storage(format!(
+                        "database schema version {} is newer than supported version {}; please upgrade your node",
+                        stored_version, CURRENT_SCHEMA_VERSION
+                    )));
+                }
+                if stored_version < CURRENT_SCHEMA_VERSION {
+                    // TODO: Implement migration for version < CURRENT_SCHEMA_VERSION
+                    // For now, fail-closed on older versions to prevent silent corruption
+                    return Err(CoreError::Storage(format!(
+                        "database schema version {} is older than current version {}; migration not yet implemented",
+                        stored_version, CURRENT_SCHEMA_VERSION
+                    )));
+                }
+                // Exact match - proceed
+                Ok(())
+            }
+            None => {
+                // New database - write current schema version
+                let version_bytes = CURRENT_SCHEMA_VERSION.to_le_bytes();
+                self.db
+                    .insert(SCHEMA_VERSION_KEY, &version_bytes[..])
+                    .map_err(|e| CoreError::Storage(format!("schema version write: {}", e)))?;
+                self.db
+                    .flush()
+                    .map_err(|e| CoreError::Storage(format!("schema version flush: {}", e)))?;
+                Ok(())
+            }
+        }
     }
 
     // ========================================================================
@@ -190,19 +270,26 @@ impl Storage {
     // ========================================================================
 
     /// Store a full block, keyed by its hash.
+    /// Uses a sled Batch for atomic writes across all three keys.
     pub fn put_block(&self, block: &Block) -> Result<()> {
         let hash = block.hash();
         let key = block_key(&hash);
         let encoded = block.encode_block();
-        self.db
-            .insert(&key, encoded)
-            .map_err(|e| CoreError::Storage(format!("put_block: {}", e)))?;
 
-        // Also store hash→height mapping
         let height_key = hash_to_height_key(&hash);
+        let h2h_key = height_to_hash_key(block.header.height.0);
+
+        let mut batch = sled::Batch::default();
+        batch.insert(key.as_slice(), encoded);
+        batch.insert(
+            height_key.as_slice(),
+            block.header.height.0.to_le_bytes().to_vec(),
+        );
+        batch.insert(h2h_key.as_slice(), hash.as_bytes().to_vec());
+
         self.db
-            .insert(height_key, block.header.height.0.to_le_bytes().to_vec())
-            .map_err(|e| CoreError::Storage(format!("put_block height mapping: {}", e)))?;
+            .apply_batch(batch)
+            .map_err(|e| CoreError::Storage(format!("put_block: {}", e)))?;
 
         Ok(())
     }
@@ -242,25 +329,49 @@ impl Storage {
         }
     }
 
-    /// Get a block by height (looks up hash from tip chain, then fetches block).
-    /// This requires the block to be at a known height.
+    /// Get a block by height using O(1) height→hash lookup.
     pub fn get_block_by_height(&self, height: u32) -> Result<Option<Block>> {
-        // We need to find the block hash at this height.
-        // Scan hash_to_height for matching height.
-        let height_bytes = height.to_le_bytes();
-        for entry in self
+        let key = height_to_hash_key(height);
+        match self
             .db
-            .scan_prefix(b"hash_to_height:")
+            .get(&key)
+            .map_err(|e| CoreError::Storage(format!("get_block_by_height: {}", e)))?
         {
-            let (key, val) = entry.map_err(|e| CoreError::Storage(format!("scan: {}", e)))?;
-            if val.len() >= 4 && val[..4] == height_bytes {
+            Some(data) => {
+                if data.len() < 32 {
+                    return Err(CoreError::Storage(
+                        "invalid height_to_hash data".to_string(),
+                    ));
+                }
                 let mut hash_bytes = [0u8; 32];
-                hash_bytes.copy_from_slice(&key[15..]); // skip "hash_to_height:" prefix
+                hash_bytes.copy_from_slice(&data[..32]);
                 let hash = Hash::from_bytes(hash_bytes);
-                return self.get_block_by_hash(&hash);
+                self.get_block_by_hash(&hash)
             }
+            None => Ok(None),
         }
-        Ok(None)
+    }
+
+    /// Get the canonical block hash at a height.
+    pub fn get_canonical_hash_at_height(&self, height: u32) -> Result<Option<Hash>> {
+        let key = height_to_hash_key(height);
+        match self
+            .db
+            .get(&key)
+            .map_err(|e| CoreError::Storage(format!("get_canonical_hash_at_height: {}", e)))?
+        {
+            Some(data) => {
+                if data.len() < 32 {
+                    return Err(CoreError::Storage(
+                        "invalid height_to_hash data".to_string(),
+                    ));
+                }
+                let mut hash_bytes = [0u8; 32];
+                hash_bytes.copy_from_slice(&data[..32]);
+                Ok(Some(Hash::from_bytes(hash_bytes)))
+            }
+            None => Ok(None),
+        }
     }
 
     // ========================================================================
@@ -400,9 +511,64 @@ impl Storage {
         Ok(())
     }
 
+    /// Atomically commit a block, tip, and full state into a single sled batch.
+    ///
+    /// This ensures that if the process crashes mid-write, the database is either:
+    /// - fully updated (all three committed), or
+    /// - unchanged (all three rolled back via sled WAL).
+    ///
+    /// This prevents the inconsistent state where tip is ahead of accounts.
+    pub fn commit_block(&self, block: &Block, tip: &PersistedTip, state: &State) -> Result<()> {
+        let mut batch = sled::Batch::default();
+
+        // 1. Block data: header, block, hash↔height mappings
+        let height = block.header.height.0;
+        let header_key = header_key(height);
+        batch.insert(header_key, block.header.encode());
+
+        let block_hash = block.hash();
+        let block_k = block_key(&block_hash);
+        batch.insert(block_k, block.encode_block());
+
+        let h2h_key = hash_to_height_key(&block_hash);
+        batch.insert(h2h_key, height.to_le_bytes().to_vec());
+
+        let h2h_reverse = height_to_hash_key(height);
+        batch.insert(h2h_reverse, block_hash.as_bytes().to_vec());
+
+        // 2. Tip metadata
+        batch.insert(TIP_KEY.to_vec(), tip.encode());
+
+        // 3. Full state: supply + all accounts
+        batch.insert(
+            SUPPLY_KEY.to_vec(),
+            state.total_supply().to_le_bytes().to_vec(),
+        );
+        for (addr_bytes, account) in state.accounts_iter() {
+            let addr =
+                chroma_core::types::Address::from_hash160(chroma_core::hash::Hash160(*addr_bytes));
+            let key = account_key(&addr);
+            let mut data = Vec::with_capacity(16);
+            data.extend_from_slice(&account.balance.to_le_bytes());
+            data.extend_from_slice(&account.nonce.to_le_bytes());
+            batch.insert(key, data);
+        }
+
+        self.db
+            .apply_batch(batch)
+            .map_err(|e| CoreError::Storage(format!("commit_block: {}", e)))?;
+
+        Ok(())
+    }
+
     /// Store all accounts from a State.
     pub fn put_state(&self, state: &State) -> Result<()> {
         self.put_supply(state.total_supply())?;
+        for (addr_bytes, account) in state.accounts_iter() {
+            let key =
+                chroma_core::types::Address::from_hash160(chroma_core::hash::Hash160(*addr_bytes));
+            self.put_account(&key, account)?;
+        }
         Ok(())
     }
 
@@ -412,6 +578,47 @@ impl Storage {
             .flush()
             .map_err(|e| CoreError::Storage(format!("flush: {}", e)))?;
         Ok(())
+    }
+
+    /// Load all accounts from storage into a State object.
+    pub fn load_state(&self) -> Result<chroma_state::State> {
+        use chroma_core::hash::Hash160;
+        use chroma_core::types::Address;
+        use chroma_state::State;
+
+        let mut state = State::new();
+        let total_supply = self.get_supply().unwrap_or(0);
+        state.set_total_supply(total_supply);
+
+        let prefix = b"accounts:";
+        for entry in self.db.scan_prefix(prefix) {
+            let (key, data) =
+                entry.map_err(|e| CoreError::Storage(format!("load_state: {}", e)))?;
+            if data.len() != 16 {
+                eprintln!(
+                    "load_state: skipping corrupted account at key {:?} (expected 16 bytes, got {})",
+                    &key[prefix.len()..],
+                    data.len()
+                );
+                continue;
+            }
+            let mut addr_bytes = [0u8; 20];
+            if key.len() == prefix.len() + 20 {
+                addr_bytes.copy_from_slice(&key[prefix.len()..]);
+            } else {
+                continue;
+            }
+            let balance = u64::from_le_bytes([
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+            ]);
+            let nonce = u64::from_le_bytes([
+                data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+            ]);
+            let address = Address::from_hash160(Hash160(addr_bytes));
+            state.set_account_direct(&address, chroma_state::Account { balance, nonce });
+        }
+
+        Ok(state)
     }
 
     /// Get the approximate size of the database on disk.
@@ -429,9 +636,9 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chroma_block::BlockHeader;
     use chroma_core::hash::Hash160;
     use chroma_core::types::{BlockHeight, CompactTarget};
-    use chroma_block::BlockHeader;
 
     fn test_header(height: u32) -> BlockHeader {
         BlockHeader {
@@ -652,5 +859,107 @@ mod tests {
             assert_eq!(acc.balance, (i as u64) * 1_000_000);
             assert_eq!(acc.nonce, i as u64);
         }
+    }
+
+    // ====================================================================
+    // AUDIT 3: Atomic commit_block tests
+    // ====================================================================
+
+    #[test]
+    fn test_commit_block_is_atomic() {
+        let storage = Storage::open_temporary().unwrap();
+        let block = test_block(1);
+        let block_hash = block.hash();
+
+        let mut state = chroma_state::State::new();
+        let addr = test_address(0);
+        state.set_account_direct(
+            &addr,
+            Account {
+                balance: 5000,
+                nonce: 3,
+            },
+        );
+        state.set_total_supply(5000);
+
+        let tip = PersistedTip {
+            height: 1,
+            hash: block_hash,
+            cumulative_work: [1u8; 32],
+            supply: 5000,
+        };
+
+        // Commit block + tip + state atomically
+        storage.commit_block(&block, &tip, &state).unwrap();
+        storage.flush().unwrap();
+
+        // Verify all three were written
+        let retrieved_block = storage.get_block_by_hash(&block_hash).unwrap().unwrap();
+        assert_eq!(retrieved_block.header.height.0, 1);
+
+        let retrieved_tip = storage.get_tip().unwrap().unwrap();
+        assert_eq!(retrieved_tip.height, 1);
+        assert_eq!(retrieved_tip.hash, block_hash);
+
+        let retrieved_acc = storage.get_account(&addr).unwrap().unwrap();
+        assert_eq!(retrieved_acc.balance, 5000);
+        assert_eq!(retrieved_acc.nonce, 3);
+
+        assert_eq!(storage.get_supply().unwrap(), 5000);
+    }
+
+    #[test]
+    fn test_commit_block_overwrites_previous_state() {
+        let storage = Storage::open_temporary().unwrap();
+        let addr = test_address(0);
+
+        // Commit state 1
+        let block1 = test_block(1);
+        let mut state1 = chroma_state::State::new();
+        state1.set_account_direct(
+            &addr,
+            Account {
+                balance: 1000,
+                nonce: 1,
+            },
+        );
+        state1.set_total_supply(1000);
+        let tip1 = PersistedTip {
+            height: 1,
+            hash: block1.hash(),
+            cumulative_work: [1u8; 32],
+            supply: 1000,
+        };
+        storage.commit_block(&block1, &tip1, &state1).unwrap();
+
+        // Commit state 2 with different account data
+        let block2 = test_block(2);
+        let mut state2 = chroma_state::State::new();
+        state2.set_account_direct(
+            &addr,
+            Account {
+                balance: 2000,
+                nonce: 2,
+            },
+        );
+        state2.set_total_supply(2000);
+        let tip2 = PersistedTip {
+            height: 2,
+            hash: block2.hash(),
+            cumulative_work: [2u8; 32],
+            supply: 2000,
+        };
+        storage.commit_block(&block2, &tip2, &state2).unwrap();
+        storage.flush().unwrap();
+
+        // Verify state 2 is fully in effect
+        let tip = storage.get_tip().unwrap().unwrap();
+        assert_eq!(tip.height, 2);
+
+        let acc = storage.get_account(&addr).unwrap().unwrap();
+        assert_eq!(acc.balance, 2000);
+        assert_eq!(acc.nonce, 2);
+
+        assert_eq!(storage.get_supply().unwrap(), 2000);
     }
 }

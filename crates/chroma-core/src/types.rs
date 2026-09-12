@@ -1,8 +1,10 @@
 //! Core Protocol Types
 
+use crate::constants::ADDRESS_HRP;
 use crate::error::{CoreError, Result};
 use crate::hash::Hash160;
 use crate::serialize::{CanonicalDecode, CanonicalEncode};
+use bech32::{Bech32m, Hrp};
 
 // ============================================================================
 // Block Height
@@ -177,8 +179,9 @@ impl CanonicalDecode for Nonce {
 // ============================================================================
 
 /// Network identifier — prevents cross-network replay
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum NetworkId {
+    #[default]
     Devnet,
     Testnet,
     Mainnet,
@@ -193,12 +196,6 @@ impl NetworkId {
             NetworkId::Mainnet => "chroma-mainnet",
             NetworkId::Unknown => "unknown",
         }
-    }
-}
-
-impl Default for NetworkId {
-    fn default() -> Self {
-        NetworkId::Devnet
     }
 }
 
@@ -223,7 +220,10 @@ impl CanonicalDecode for NetworkId {
             1 => Ok(NetworkId::Testnet),
             2 => Ok(NetworkId::Mainnet),
             255 => Ok(NetworkId::Unknown),
-            _ => Err(CoreError::InvalidNetworkId(format!("unknown network ID: {}", data[0]))),
+            _ => Err(CoreError::InvalidNetworkId(format!(
+                "unknown network ID: {}",
+                data[0]
+            ))),
         }
     }
 
@@ -250,7 +250,7 @@ impl std::fmt::Debug for Address {
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{}", self.0.to_hex())
+        write!(f, "{}", self.to_bech32())
     }
 }
 
@@ -264,6 +264,61 @@ impl Address {
     pub fn as_hash160(&self) -> Hash160 {
         self.0
     }
+
+    /// Encode as Bech32m string with the "chr" HRP.
+    pub fn to_bech32(&self) -> String {
+        let hrp = Hrp::parse(ADDRESS_HRP).expect("valid HRP");
+        bech32::encode::<Bech32m>(hrp, self.0.as_ref()).expect("valid bech32m encoding")
+    }
+
+    /// Decode a Bech32m address string.
+    pub fn from_bech32(s: &str) -> Result<Self> {
+        let (hrp, data) = bech32::decode(s)
+            .map_err(|e| CoreError::InvalidFormat(format!("bech32 decode failed: {}", e)))?;
+
+        if hrp.as_str() != ADDRESS_HRP {
+            return Err(CoreError::InvalidFormat(format!(
+                "invalid HRP: expected '{}', got '{}'",
+                ADDRESS_HRP,
+                hrp.as_str()
+            )));
+        }
+
+        if data.len() != 20 {
+            return Err(CoreError::InvalidFormat(format!(
+                "address must be 20 bytes, got {}",
+                data.len()
+            )));
+        }
+
+        let mut bytes = [0u8; 20];
+        bytes.copy_from_slice(&data);
+        Ok(Address(Hash160(bytes)))
+    }
+}
+
+impl std::str::FromStr for Address {
+    type Err = crate::error::CoreError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // Try Bech32 first (new format: chr...)
+        if s.starts_with(ADDRESS_HRP) {
+            return Address::from_bech32(s);
+        }
+        // Fall back to hex (0x-prefixed or raw)
+        let hex_str = s.strip_prefix("0x").unwrap_or(s);
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| CoreError::InvalidFormat(format!("invalid hex address: {}", e)))?;
+        if bytes.len() != 20 {
+            return Err(CoreError::InvalidFormat(format!(
+                "address must be 20 bytes, got {}",
+                bytes.len()
+            )));
+        }
+        let mut arr = [0u8; 20];
+        arr.copy_from_slice(&bytes);
+        Ok(Address(Hash160(arr)))
+    }
 }
 
 impl From<Hash160> for Address {
@@ -274,14 +329,16 @@ impl From<Hash160> for Address {
 
 impl CanonicalEncode for Address {
     fn encode(&self) -> Vec<u8> {
-        self.0.0.to_vec() // 20 bytes, raw
+        self.0 .0.to_vec() // 20 bytes, raw
     }
 }
 
 impl CanonicalDecode for Address {
     fn decode(data: &[u8]) -> Result<Self> {
         if data.len() != 20 {
-            return Err(crate::error::CoreError::InvalidFormat("address must be 20 bytes".to_string()));
+            return Err(crate::error::CoreError::InvalidFormat(
+                "address must be 20 bytes".to_string(),
+            ));
         }
         let mut bytes = [0u8; 20];
         bytes.copy_from_slice(data);
@@ -312,7 +369,7 @@ impl CompactTarget {
     /// Convert to full 256-bit target
     pub fn to_full_target(&self) -> [u8; 32] {
         let bits = self.0;
-        let exponent = (bits >> 24) as u32;
+        let exponent = bits >> 24;
         let mantissa = bits & 0x00ffffff;
 
         if exponent <= 3 {
@@ -370,14 +427,14 @@ impl CompactTarget {
         // bit_length = (31 - first) * 8 + (8 - leading_zeros of first non-zero byte)
         let lz = target[first].leading_zeros() as usize;
         let bit_len = (31 - first) * 8 + (8 - lz);
-        let n_size = ((bit_len + 7) / 8) as u32;
+        let n_size = bit_len.div_ceil(8) as u32;
 
         // Extract the mantissa: the top 3 bytes of the value starting at byte `first`
         // The mantissa occupies bytes [first..first+3] (padded with zeros if needed)
         let mut mantissa: u32 = 0;
         let end = std::cmp::min(first + 3, 32);
-        for i in first..end {
-            mantissa = (mantissa << 8) | target[i] as u32;
+        for byte in &target[first..end] {
+            mantissa = (mantissa << 8) | *byte as u32;
         }
         // Pad remaining bytes to fill 24-bit mantissa
         for _ in end..(first + 3) {

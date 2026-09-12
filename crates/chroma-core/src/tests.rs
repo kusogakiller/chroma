@@ -1,6 +1,7 @@
 //! Unit Tests for chroma-core
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::constants::*;
     use crate::hash::{Hash, Hash160};
@@ -118,8 +119,8 @@ mod tests {
         // bool
         assert_eq!(true.encode(), vec![0x01]);
         assert_eq!(false.encode(), vec![0x00]);
-        assert_eq!(bool::decode(&[0x01]).unwrap(), true);
-        assert_eq!(bool::decode(&[0x00]).unwrap(), false);
+        assert!(bool::decode(&[0x01]).unwrap());
+        assert!(!bool::decode(&[0x00]).unwrap());
         assert!(bool::decode(&[0x02]).is_err());
     }
 
@@ -249,7 +250,10 @@ mod tests {
         // Slightly smaller mantissa = slightly smaller target = slightly higher difficulty
         let d_harder = Difficulty::from_bits(CompactTarget(0x1d00fffd));
         let d_easy = Difficulty::from_bits(CompactTarget(0x1d010000));
-        assert!(d_harder.0 >= d1.0, "d_harder={d_harder:?} should be >= d1={d1:?}");
+        assert!(
+            d_harder.0 >= d1.0,
+            "d_harder={d_harder:?} should be >= d1={d1:?}"
+        );
         assert!(d_easy.0 <= d1.0, "d_easy={d_easy:?} should be <= d1={d1:?}");
     }
 
@@ -279,7 +283,15 @@ mod tests {
 
     #[test]
     fn test_roundtrip_u64() {
-        for v in [0u64, 1, 0xFF, 0x0100, 0x010000, 0x01000000, 0xFFFFFFFFFFFFFFFF] {
+        for v in [
+            0u64,
+            1,
+            0xFF,
+            0x0100,
+            0x010000,
+            0x01000000,
+            0xFFFFFFFFFFFFFFFF,
+        ] {
             let encoded = v.encode();
             assert_eq!(u64::decode(&encoded).unwrap(), v);
         }
@@ -387,6 +399,128 @@ mod tests {
         let (q, r) = a.div_rem(&b);
         assert_eq!(q, U256::from_u64(3));
         assert_eq!(r, U256::from_u64(1));
+    }
+
+    /// MAXIMUM_TARGET boundary, reconstructed byte-exact:
+    /// bytes [00, 03, FF, FF, C0, 00×27] (~4× genesis target).
+    fn maximum_target_bytes() -> [u8; 32] {
+        let mut t = [0u8; 32];
+        t[1] = 0x03;
+        t[2] = 0xFF;
+        t[3] = 0xFF;
+        t[4] = 0xC0;
+        t
+    }
+
+    #[test]
+    fn test_compact_maximum_target_boundary() {
+        let max = maximum_target_bytes();
+        let max_u = U256::from_be_bytes(&max);
+        // Canonical compact of the boundary value.
+        assert_eq!(
+            CompactTarget::from_full_target(&max),
+            CompactTarget(0x1F03FFFF)
+        );
+        // Precision absorption: MAX±1 (5th byte C0→C1/BF, below mantissa
+        // resolution) map to the same compact. Documented Bitcoin-style
+        // behavior — consensus compares full U256 values, never compacts.
+        let mut plus = max;
+        plus[4] = 0xC1;
+        assert_eq!(
+            CompactTarget::from_full_target(&plus),
+            CompactTarget(0x1F03FFFF)
+        );
+        let mut minus = max;
+        minus[4] = 0xBF;
+        assert_eq!(
+            CompactTarget::from_full_target(&minus),
+            CompactTarget(0x1F03FFFF)
+        );
+        // Just below / above as full values: canonical compacts straddle it.
+        let below_full = CompactTarget(0x1F03FFFF).to_full_target();
+        assert!(U256::from_be_bytes(&below_full) <= max_u);
+        let above_full = CompactTarget(0x1F04FFFF).to_full_target();
+        assert!(U256::from_be_bytes(&above_full) > max_u);
+        // Roundtrip of the boundary compact is lossy in sub-mantissa bytes
+        // (C0→00) — pinned, pre-existing behavior, harmless because the
+        // retarget hold compares numeric targets and returns header bits
+        // verbatim instead of roundtripping them.
+        let rt = CompactTarget::from_full_target(&CompactTarget(0x1F03FFFF).to_full_target());
+        assert_eq!(rt, CompactTarget(0x1F03FFFF));
+    }
+
+    #[test]
+    fn test_compact_edge_values() {
+        // Zero / underflowing mantissas denote the zero target.
+        assert_eq!(CompactTarget(0).to_full_target(), [0u8; 32]);
+        assert_eq!(CompactTarget(0x00000001).to_full_target(), [0u8; 32]);
+        assert_eq!(CompactTarget(0x01003456).to_full_target(), [0u8; 32]);
+        // Small exponents place small values at the tail (big-endian).
+        let mut tail = [0u8; 32];
+        tail[31] = 0xFF;
+        assert_eq!(CompactTarget(0x0200FFFF).to_full_target(), tail);
+        let mut tail2 = [0u8; 32];
+        tail2[30] = 0xFF;
+        tail2[31] = 0xFF;
+        assert_eq!(CompactTarget(0x0300FFFF).to_full_target(), tail2);
+        // Non-canonical MSB-set mantissa: to_full is literal, from_full
+        // canonicalizes (size bump). Validation compares header bits exactly
+        // and PoW uses to_full of those same bits, so this is self-consistent.
+        let full = CompactTarget(0x1DFFFFFF).to_full_target();
+        assert_eq!(&full[3..6], &[0xFF, 0xFF, 0xFF]);
+        assert_eq!(
+            CompactTarget::from_full_target(&full),
+            CompactTarget(0x1E00FFFF)
+        );
+        // Saturating exponents denote the maximum target.
+        assert_eq!(CompactTarget(0x2100FFFF).to_full_target(), [0xFF; 32]);
+        assert_eq!(CompactTarget(0xFF123456).to_full_target(), [0xFF; 32]);
+        // Canonical encode/decode roundtrip for boundary compacts.
+        for raw in [
+            0x00000000u32,
+            0x1D00FFFF,
+            0x1F03FFFF,
+            0x1F04FFFF,
+            0x20FFFFFF,
+            0x2100FFFF,
+            0xFFFFFFFF,
+        ] {
+            let bits = CompactTarget(raw);
+            assert_eq!(CompactTarget::decode(&bits.encode()).unwrap(), bits);
+        }
+    }
+
+    #[test]
+    fn test_compact_order_matches_numeric_for_canonical() {
+        // For canonical compacts, u32 ordering agrees with numeric target
+        // ordering. Non-canonical encodings (MSB-set mantissa without size
+        // bump) are the only divergence — which is why consensus always
+        // converts to full U256 targets before comparing.
+        let canonical = [
+            CompactTarget(0x1700FFFF),
+            CompactTarget(0x1C00FFFF),
+            CompactTarget(0x1D00FFFE),
+            CompactTarget(0x1D00FFFF),
+            CompactTarget(0x1D010000),
+            CompactTarget(0x1E00FFFF),
+            CompactTarget(0x1E0FFFFF),
+            CompactTarget(0x1F03FFFF),
+            CompactTarget(0x1F04FFFF),
+            CompactTarget(0x2002D82D),
+            CompactTarget(0x20FFFFFF),
+        ];
+        for pair in canonical.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(a.0 < b.0);
+            let fa = U256::from_be_bytes(&a.to_full_target());
+            let fb = U256::from_be_bytes(&b.to_full_target());
+            assert!(
+                fa < fb,
+                "order inversion: {:08x} < {:08x} but targets disagree",
+                a.0,
+                b.0
+            );
+        }
     }
 
     #[test]
@@ -497,6 +631,60 @@ mod tests {
     }
 
     #[test]
+    fn test_address_bech32_roundtrip() {
+        let h = Hash160::from_bytes([0x42u8; 20]);
+        let addr = Address::from_hash160(h);
+        let bech32_str = addr.to_bech32();
+        assert!(bech32_str.starts_with("chr1"), "should start with chr1");
+        let decoded = Address::from_bech32(&bech32_str).unwrap();
+        assert_eq!(addr, decoded);
+    }
+
+    #[test]
+    fn test_address_display_is_bech32() {
+        let h = Hash160::from_bytes([0xABu8; 20]);
+        let addr = Address::from_hash160(h);
+        let display = format!("{}", addr);
+        assert!(
+            display.starts_with("chr1"),
+            "display should be bech32: {}",
+            display
+        );
+    }
+
+    #[test]
+    fn test_address_from_str_bech32() {
+        use std::str::FromStr;
+        let h = Hash160::from_bytes([0xCDu8; 20]);
+        let addr = Address::from_hash160(h);
+        let bech32_str = addr.to_bech32();
+        let parsed = Address::from_str(&bech32_str).unwrap();
+        assert_eq!(addr, parsed);
+    }
+
+    #[test]
+    fn test_address_from_str_hex() {
+        use std::str::FromStr;
+        let hex_str = "0x4242424242424242424242424242424242424242";
+        let parsed = Address::from_str(hex_str).unwrap();
+        assert_eq!(parsed.0 .0, [0x42u8; 20]);
+    }
+
+    #[test]
+    fn test_address_from_str_hex_no_prefix() {
+        use std::str::FromStr;
+        let hex_str = "4242424242424242424242424242424242424242";
+        let parsed = Address::from_str(hex_str).unwrap();
+        assert_eq!(parsed.0 .0, [0x42u8; 20]);
+    }
+
+    #[test]
+    fn test_address_from_bech32_wrong_hrp() {
+        let result = Address::from_bech32("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(result.is_err(), "wrong HRP should fail");
+    }
+
+    #[test]
     fn test_hash_deterministic() {
         let h1 = Hash::blake3(b"test");
         let h2 = Hash::blake3(b"test");
@@ -531,5 +719,55 @@ mod tests {
         let boundary = 128u64;
         let encoded = encode_leb128(boundary);
         assert_eq!(encoded, vec![0x80, 0x01]);
+    }
+
+    #[test]
+    fn test_strict_decode_rejects_trailing_u16() {
+        assert!(u16::decode(&[0x34, 0x12, 0xFF]).is_err());
+        assert!(u16::decode(&[0x34]).is_err());
+    }
+
+    #[test]
+    fn test_strict_decode_rejects_trailing_u32() {
+        assert!(u32::decode(&[0x78, 0x56, 0x34, 0x12, 0xFF]).is_err());
+        assert!(u32::decode(&[0x78, 0x56]).is_err());
+    }
+
+    #[test]
+    fn test_strict_decode_rejects_trailing_u64() {
+        let data = 0x123456789ABCDEFu64.encode();
+        let mut with_trailing = data.clone();
+        with_trailing.push(0xFF);
+        assert!(u64::decode(&with_trailing).is_err());
+        assert!(u64::decode(&data[..4]).is_err());
+    }
+
+    #[test]
+    fn test_strict_decode_rejects_trailing_u128() {
+        let val = 0x123456789ABCDEF0123456789ABCDEFu128;
+        let mut with_trailing = val.encode();
+        with_trailing.push(0xFF);
+        assert!(u128::decode(&with_trailing).is_err());
+        assert!(u128::decode(&val.encode()[..8]).is_err());
+    }
+
+    #[test]
+    fn test_strict_decode_rejects_trailing_bool() {
+        assert!(bool::decode(&[0x01, 0x00]).is_err());
+    }
+
+    #[test]
+    fn test_strict_decode_exact_sizes() {
+        // All primitive decoders reject wrong sizes
+        assert!(u16::decode(&[]).is_err());
+        assert!(u16::decode(&[0x01]).is_err());
+        assert!(u16::decode(&[0x01, 0x02, 0x03]).is_err());
+
+        assert!(u32::decode(&[]).is_err());
+        assert!(u32::decode(&[0x01, 0x02, 0x03]).is_err());
+        assert!(u32::decode(&[0x01, 0x02, 0x03, 0x04, 0x05]).is_err());
+
+        assert!(u64::decode(&[0u8; 7]).is_err());
+        assert!(u64::decode(&[0u8; 9]).is_err());
     }
 }

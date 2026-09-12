@@ -18,11 +18,17 @@ impl U256 {
     /// Construct from a big-endian 32-byte array.
     pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
         let mut limbs = [0u64; 4];
-        for i in 0..4 {
+        for (i, limb) in limbs.iter_mut().enumerate() {
             let base = (3 - i) * 8;
-            limbs[i] = u64::from_be_bytes([
-                bytes[base], bytes[base + 1], bytes[base + 2], bytes[base + 3],
-                bytes[base + 4], bytes[base + 5], bytes[base + 6], bytes[base + 7],
+            *limb = u64::from_be_bytes([
+                bytes[base],
+                bytes[base + 1],
+                bytes[base + 2],
+                bytes[base + 3],
+                bytes[base + 4],
+                bytes[base + 5],
+                bytes[base + 6],
+                bytes[base + 7],
             ]);
         }
         U256(limbs)
@@ -62,8 +68,12 @@ impl U256 {
 
     /// Shift left by `n` bits. If n >= 256, returns ZERO.
     pub fn shl(&self, n: u32) -> U256 {
-        if n >= 256 { return U256::ZERO; }
-        if n == 0 { return *self; }
+        if n >= 256 {
+            return U256::ZERO;
+        }
+        if n == 0 {
+            return *self;
+        }
         let limb_shift = (n / 64) as usize;
         let bit_shift = n % 64;
         let mut result = [0u64; 4];
@@ -79,9 +89,14 @@ impl U256 {
     }
 
     /// Shift right by `n` bits.
+    #[allow(clippy::needless_range_loop)]
     pub fn shr(&self, n: u32) -> U256 {
-        if n >= 256 { return U256::ZERO; }
-        if n == 0 { return *self; }
+        if n >= 256 {
+            return U256::ZERO;
+        }
+        if n == 0 {
+            return *self;
+        }
         let limb_shift = (n / 64) as usize;
         let bit_shift = n % 64;
         let mut r = [0u64; 4];
@@ -95,6 +110,7 @@ impl U256 {
     }
 
     /// self - other, wrapping (assumes self >= other for correct results).
+    #[allow(clippy::needless_range_loop)]
     pub fn wrapping_sub(&self, other: &U256) -> U256 {
         let mut result = [0u64; 4];
         let mut borrow = false;
@@ -108,6 +124,7 @@ impl U256 {
     }
 
     /// self + other, wrapping.
+    #[allow(clippy::needless_range_loop)]
     pub fn wrapping_add(&self, other: &U256) -> U256 {
         let mut result = [0u64; 4];
         let mut carry: u128 = 0;
@@ -120,6 +137,7 @@ impl U256 {
     }
 
     /// self + other, returning None on overflow.
+    #[allow(clippy::needless_range_loop)]
     pub fn checked_add(&self, other: &U256) -> Option<U256> {
         let mut result = [0u64; 4];
         let mut carry: u128 = 0;
@@ -330,9 +348,9 @@ mod tests {
     fn test_difficulty_1_division() {
         // DIFFICULTY_1 target / DIFFICULTY_1 target = 1
         let bits = 0x1d00ffffu32;
-        let exponent = (bits >> 24) as u32;
+        let exponent = bits >> 24;
         let mantissa = bits & 0x00ffffff;
-        let shift_bytes = (exponent - 3) as u32;
+        let shift_bytes = exponent - 3;
         // target = mantissa << (8 * shift_bytes)
         let target = U256::from_u64(mantissa as u64).shl(shift_bytes * 8);
         let (q, r) = target.div_rem(&target);

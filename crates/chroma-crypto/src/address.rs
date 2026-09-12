@@ -5,8 +5,8 @@
 //! Checksum: Bech32m
 //! Data: witness-style encoding of 20-byte HASH160
 
-use bech32::{self, Hrp, Bech32m};
-use chroma_core::{Hash160, ADDRESS_HRP, ADDRESS_HASH_LEN};
+use bech32::{self, Bech32m, Hrp};
+use chroma_core::{Hash160, ADDRESS_HASH_LEN, ADDRESS_HRP};
 
 /// Chroma address string (e.g., "chr1...")
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

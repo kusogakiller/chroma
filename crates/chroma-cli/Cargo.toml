@@ -20,8 +20,18 @@ chroma-consensus = { path = "../chroma-consensus" }
 chroma-storage = { path = "../chroma-storage" }
 chroma-p2p = { path = "../chroma-p2p" }
 chroma-wallet = { path = "../chroma-wallet" }
+chroma-rpc = { path = "../chroma-rpc" }
 blake3 = "1.5"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
 hex = "0.4"
 anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rpassword = "7"
+zeroize = { version = "1", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

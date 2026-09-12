@@ -3,7 +3,7 @@
 //! Uses BLAKE3 as the primary hash function (fast, secure, Rust-native).
 //! SHA-256 and RIPEMD-160 used for address derivation.
 
-use chroma_core::{Hash, blake3 as core_blake3};
+use chroma_core::{blake3 as core_blake3, Hash};
 use ripemd::{Digest, Ripemd160};
 use sha2::Sha256;
 
@@ -45,7 +45,7 @@ pub fn sha256d(data: &[u8]) -> [u8; 32] {
     hasher.update(data);
     let result = hasher.finalize();
     let mut hasher2 = Sha256::new();
-    hasher2.update(&result);
+    hasher2.update(result);
     let result2 = hasher2.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&result2);

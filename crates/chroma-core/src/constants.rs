@@ -21,7 +21,6 @@ pub const BLOCK_REWARD_UNITS: u64 = UNITS_PER_CHR; // 1,000,000 units
 /// Block timing
 pub const TARGET_BLOCK_TIME_SECS: u64 = 10;
 pub const DIFFICULTY_ADJUSTMENT_WINDOW: u32 = 10; // blocks
-pub const TARGET_TIME_PER_WINDOW_SECS: u64 = TARGET_BLOCK_TIME_SECS * DIFFICULTY_ADJUSTMENT_WINDOW as u64; // 100 seconds
 
 /// Difficulty bounds
 pub const MAX_DIFFICULTY_INCREASE_FACTOR: u64 = 4; // 4x max increase per window
@@ -67,14 +66,33 @@ pub const MAINNET_NETWORK_ID: &str = "chroma-mainnet";
 /// Address HRP (Human Readable Part)
 pub const ADDRESS_HRP: &str = "chr";
 
-/// Peer scoring
-pub const PEER_BAN_THRESHOLD: i32 = 100;
-pub const PEER_SCORE_DECAY_FACTOR: f64 = 0.99; // per minute
-
 /// Rate limits (per peer)
 pub const PEER_MSG_RATE_LIMIT: usize = 100; // messages per second
 pub const PEER_TX_RATE_LIMIT: usize = 10; // transactions per second
 
 /// Connection limits
 pub const DEFAULT_OUTBOUND_CONNECTIONS: usize = 8;
-pub const DEFAULT_INBOUND_CONNECTIONS: usize = 128;
+pub const DEFAULT_INBOUND_CONNECTIONS: usize = 16;
+
+// ============================================================================
+// Testnet-specific genesis
+// ============================================================================
+
+/// Testnet genesis timestamp (2026-09-01 00:00:00 UTC)
+pub const TESTNET_GENESIS_TIMESTAMP: u64 = 1756684800;
+/// Testnet RandomX seed
+pub const TESTNET_GENESIS_RANDOMX_SEED: &[u8] = b"Chroma Testnet Genesis Seed";
+/// Testnet default port
+pub const TESTNET_PORT: u16 = 18333;
+/// Testnet max supply (same as mainnet)
+pub const TESTNET_MAX_SUPPLY_CHR: u64 = 100_000_000;
+/// Testnet block reward (same as mainnet)
+pub const TESTNET_BLOCK_REWARD_UNITS: u64 = UNITS_PER_CHR;
+
+/// Network magic bytes (4 bytes, used for wire protocol and transaction domain separation)
+/// Mainnet: "CHRO" = 0xC4 0x48 0x52 0x4F
+/// Testnet: "CTES" = 0xC4 0x54 0x45 0x53  
+/// Regtest: "CRTT" = 0xC4 0x52 0x54 0x54
+pub const MAINNET_MAGIC: [u8; 4] = [0xC4, 0x48, 0x52, 0x4F];
+pub const TESTNET_MAGIC: [u8; 4] = [0xC4, 0x54, 0x45, 0x53];
+pub const REGTEST_MAGIC: [u8; 4] = [0xC4, 0x52, 0x54, 0x54];

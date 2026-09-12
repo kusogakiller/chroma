@@ -7,6 +7,7 @@ description = "Chroma protocol core: constants, types, canonical serialization"
 
 [dependencies]
 blake3 = "1.5"
+bech32 = "0.11"
 hex = "0.4"
 thiserror = "1.0"
 
