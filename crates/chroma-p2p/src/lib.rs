@@ -2346,7 +2346,8 @@ impl Node {
         // Worker pool lives for the whole miner lifetime: VMs are built once
         // per seed (not per block) and joined on shutdown. Hashing itself
         // stays inside spawn_blocking so the async runtime never starves.
-        let mut pool = chroma_crypto::MiningPool::new(mine_workers);
+        let full_mem = !network.regtest && !network.testnet;
+        let mut pool = chroma_crypto::MiningPool::new(mine_workers, full_mem);
         // Long-lived abort flag: set once on shutdown so an in-flight search
         // quits promptly even after the select! below has moved on.
         let quit = Arc::new(AtomicBool::new(false));
@@ -2397,9 +2398,16 @@ impl Node {
                             (tx.sender_address(), tx.recipient, tx.amount.0, tx.nonce.0)
                         }).collect();
 
-                        let state_root = cs.state
+                        let state_root = match cs.state
                             .compute_prospective_state_root(height, &miner_address, &tx_descs)
-                            .unwrap_or(Hash::ZERO);
+                        {
+                            Ok(root) => root,
+                            Err(e) => {
+                                eprintln!("Miner: state root computation failed at height {}: {}", height, e);
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                continue;
+                            }
+                        };
 
                         (height, previous_hash, previous_timestamp, bits, state_root, txs)
                     };
@@ -2456,7 +2464,7 @@ impl Node {
                             let (pool_back, mut block, mine_res) = match mined {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    pool = chroma_crypto::MiningPool::new(workers);
+                                    pool = chroma_crypto::MiningPool::new(workers, full_mem);
                                     continue;
                                 }
                             };

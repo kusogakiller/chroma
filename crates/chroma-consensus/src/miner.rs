@@ -380,7 +380,7 @@ mod tests {
             count: 10_000_000,
             target: easy_bits().to_full_target(),
         };
-        let pool = MiningPool::new(2);
+        let pool = MiningPool::new(2, false);
         let stop = Arc::new(AtomicBool::new(false));
         let winner = pool.search(&job, &stop).expect("easy target must yield");
         block.header.nonce = winner.nonce;

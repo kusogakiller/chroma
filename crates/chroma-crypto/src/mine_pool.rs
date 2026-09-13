@@ -13,7 +13,7 @@ use std::sync::{
     mpsc, Arc,
 };
 
-use randomx_rs::{RandomXFlag, RandomXVM};
+use randomx_rs::{RandomXCache, RandomXDataset, RandomXFlag, RandomXVM};
 
 use crate::randomx::{build_vm, hash_meets_target};
 use chroma_core::hash::Hash;
@@ -80,11 +80,36 @@ fn pow_input(prev: &Hash, merkle: &Hash, nonce: u64) -> Vec<u8> {
     input
 }
 
-fn worker_main(id: u64, workers: u64, rx: mpsc::Receiver<Cmd>) {
-    // The VM owns its linked cache (see `RandomXVM::new`), so keeping the
-    // VM alive keeps the cache alive — same ownership as the global worker.
-    let mut vm: Option<([u8; 32], RandomXVM)> = None;
-    let flags = RandomXFlag::get_recommended_flags();
+/// Build a full-memory RandomX VM (~2 GiB dataset) for mining throughput.
+///
+/// Light-mode VMs (~256 MiB cache only) achieve 5-20 H/s per thread, far
+/// too slow for ~10s block targets.  Full-memory mode achieves 500-5000
+/// H/s per thread — the only viable path for mainnet mining.
+///
+/// Falls back to light mode on allocation failure (e.g., low memory).
+fn build_full_mem_vm(
+    flags: RandomXFlag,
+    seed: &[u8; 32],
+) -> std::result::Result<RandomXVM, String> {
+    let full = flags | RandomXFlag::FLAG_FULL_MEM;
+    let attempt = |fl: RandomXFlag| -> std::result::Result<RandomXVM, String> {
+        let cache =
+            RandomXCache::new(fl, seed).map_err(|e| format!("RandomX cache init failed: {e:?}"))?;
+        let dataset = RandomXDataset::new(fl, cache.clone(), 0)
+            .map_err(|e| format!("RandomX dataset init failed: {e:?}"))?;
+        RandomXVM::new(fl, Some(cache), Some(dataset))
+            .map_err(|e| format!("RandomX VM init failed: {e:?}"))
+    };
+    // Try full-memory first; fall back to light mode if dataset allocation fails.
+    attempt(full).or_else(|_| build_vm(flags, seed))
+}
+
+fn worker_main(id: u64, workers: u64, rx: mpsc::Receiver<Cmd>, full_mem: bool) {
+    // The VM owns its linked cache and dataset (see `RandomXVM::new`), so
+    // keeping them alive keeps the resources alive — same ownership as the
+    // global worker.
+    let mut state: Option<([u8; 32], RandomXVM)> = None;
+    let base_flags = RandomXFlag::get_recommended_flags();
     // Channel close (pool drop) is the only exit path.
     while let Ok(Cmd::Search {
         job,
@@ -94,18 +119,23 @@ fn worker_main(id: u64, workers: u64, rx: mpsc::Receiver<Cmd>) {
     }) = rx.recv()
     {
         let end = job.start.saturating_add(job.count);
-        // (Re)build the worker-local VM only when the seed changed.
-        let seeded = vm.as_ref().map(|(s, _)| s) == Some(&job.seed);
+        // (Re)build the worker-local VM+dataset only when the seed changed.
+        let seeded = state.as_ref().map(|(s, _)| s) == Some(&job.seed);
         if !seeded {
-            match build_vm(flags, &job.seed) {
-                Ok(v) => vm = Some((job.seed, v)),
+            let build_result = if full_mem {
+                build_full_mem_vm(base_flags, &job.seed)
+            } else {
+                build_vm(base_flags, &job.seed)
+            };
+            match build_result {
+                Ok(v) => state = Some((job.seed, v)),
                 Err(_) => {
                     let _ = done.send(None);
                     continue;
                 }
             }
         }
-        let vm_ref = match vm.as_ref() {
+        let vm_ref = match state.as_ref() {
             Some((_, v)) => v,
             None => {
                 let _ = done.send(None);
@@ -152,7 +182,12 @@ pub struct MiningPool {
 
 impl MiningPool {
     /// Spawn `workers` hashing threads (`workers == 0` means 1).
-    pub fn new(workers: usize) -> Self {
+    ///
+    /// When `full_mem` is true, each worker allocates a ~2 GiB RandomX
+    /// dataset for ~500-5000 H/s throughput (mainnet mining).  When false,
+    /// workers use a ~256 MiB cache only (~5-20 H/s, sufficient for
+    /// regtest/testnet/validation).
+    pub fn new(workers: usize, full_mem: bool) -> Self {
         let n = workers.max(1) as u64;
         let mut txs = Vec::with_capacity(n as usize);
         let mut handles = Vec::with_capacity(n as usize);
@@ -162,7 +197,7 @@ impl MiningPool {
             handles.push(
                 std::thread::Builder::new()
                     .name(format!("chroma-miner-{id}"))
-                    .spawn(move || worker_main(id, n, rx))
+                    .spawn(move || worker_main(id, n, rx, full_mem))
                     .expect("mining worker thread must spawn"),
             );
         }
@@ -233,8 +268,8 @@ impl Drop for MiningPool {
     }
 }
 
-/// Default mining threads: parallelism capped for RandomX cache cost
-/// (~256 MiB Argon2 cache per worker-local VM).
+/// Default mining threads: parallelism capped for RandomX dataset cost
+/// (~2 GiB full-memory dataset per worker-local VM).
 pub fn default_mine_workers() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().clamp(1, 4))
@@ -276,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_pool_zero_workers_is_single_lane() {
-        assert_eq!(MiningPool::new(0).worker_count(), 1);
+        assert_eq!(MiningPool::new(0, false).worker_count(), 1);
     }
 
     /// Independent worker-local VMs must agree byte-for-byte: a winner found
@@ -300,7 +335,7 @@ mod tests {
             count: 50_000,
             target,
         };
-        let pool4 = MiningPool::new(4);
+        let pool4 = MiningPool::new(4, false);
         let w4 = pool4
             .search(&job, &Arc::new(AtomicBool::new(false)))
             .expect("range must yield");
@@ -311,7 +346,7 @@ mod tests {
         assert!(meets(&Hash::from_bytes(w4.hash), &target));
 
         // The same nonce, hashed alone on a different pool instance: same bytes.
-        let pool1 = MiningPool::new(1);
+        let pool1 = MiningPool::new(1, false);
         let solo = MineJob {
             start: w4.nonce,
             count: 1,
@@ -326,7 +361,7 @@ mod tests {
     #[test]
     fn test_preset_stop_aborts_search() {
         let seed = [0x5Bu8; 32];
-        let pool = MiningPool::new(2);
+        let pool = MiningPool::new(2, false);
         let stop = Arc::new(AtomicBool::new(true));
         let job = MineJob {
             seed,
@@ -341,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_empty_range_returns_none_without_hashing() {
-        let pool = MiningPool::new(2);
+        let pool = MiningPool::new(2, false);
         let stop = Arc::new(AtomicBool::new(false));
         let job = MineJob {
             seed: [0x77u8; 32],

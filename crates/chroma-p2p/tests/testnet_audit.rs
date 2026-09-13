@@ -34,7 +34,7 @@ static RANDOMX_INIT: Once = Once::new();
 fn init_randomx_for_test() {
     RANDOMX_INIT.call_once(|| {
         use chroma_core::constants::GENESIS_RANDOMX_SEED;
-        let seed = chroma_crypto::randomx::derive_seed(&Hash::blake3(GENESIS_RANDOMX_SEED));
+        let seed = chroma_core::blake3(GENESIS_RANDOMX_SEED);
         let _ = chroma_crypto::randomx::init_randomx_context(&seed);
     });
 }
