@@ -1055,7 +1055,7 @@ async fn e2e_multi_node_full_lifecycle() {
     let addr1: SocketAddr = format!("127.0.0.1:{}", port1).parse().unwrap();
 
     let config1 = make_node_config(port1, dir1.clone(), vec![]);
-    let config2 = make_node_config(port2, dir2.clone(), vec![addr1]);
+    let config2 = make_node_config_no_mine(port2, dir2.clone(), vec![addr1]);
 
     let mut node1 = Node::new(config1);
     let mut node2 = Node::new(config2);
@@ -5394,7 +5394,9 @@ async fn e2e_unlinked_header_batch_not_scored() {
     for _ in 0..10 {
         {
             let pm = node_a.peer_manager().read().await;
-            let p = pm.get_peer(&evil_addr).expect("peer entry must be retained");
+            let p = pm
+                .get_peer(&evil_addr)
+                .expect("peer entry must be retained");
             assert_eq!(p.score, 0, "unlinked batch must not be scored");
             assert!(!p.is_banned(), "unlinked batch must never ban");
         }
@@ -5410,4 +5412,45 @@ async fn e2e_unlinked_header_batch_not_scored() {
     node_a.shutdown();
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let _ = std::fs::remove_dir_all(&dir_a);
+}
+
+/// NodeConfig.mine is honored through the real Node::run startup path (not
+/// just parsed): a regtest node with mining enabled advances its tip, while
+/// an identical node with mining disabled stays at genesis. Mainnet shares
+/// the same gate expression, so this pins the flag plumbing for all nets.
+#[tokio::test]
+async fn e2e_miner_flag_honored() {
+    init_randomx_for_test();
+    let port_a = next_port();
+    let dir_a = test_dir("mineflag_a");
+    let mut node_a = Node::new(make_node_config(port_a, dir_a.clone(), vec![]));
+    node_a.run().await.unwrap();
+    let advanced = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let tip = node_a.storage().get_tip().unwrap().unwrap();
+            if tip.height >= 1 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(advanced, "node with mine=true must advance its tip");
+    node_a.shutdown();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let port_b = next_port();
+    let dir_b = test_dir("mineflag_b");
+    let mut node_b = Node::new(make_node_config_no_mine(port_b, dir_b.clone(), vec![]));
+    node_b.run().await.unwrap();
+    // Easy regtest mines a block in ~1s when enabled; 10s of silence proves
+    // the miner task was never spawned.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let tip_b = node_b.storage().get_tip().unwrap().unwrap();
+    assert_eq!(tip_b.height, 0, "node with mine=false must stay at genesis");
+    node_b.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
 }

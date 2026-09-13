@@ -344,6 +344,51 @@ mod tests {
         ));
     }
 
+    /// A pool-found nonce must produce a block the normal validator accepts.
+    /// Uses the real seed path (`seed_for_height`) and the easy test target;
+    /// consensus rules are unchanged, only the search is parallel.
+    #[test]
+    fn test_pool_found_block_applies() {
+        use chroma_crypto::{seed_for_height, MineJob, MiningPool};
+        use std::sync::{atomic::AtomicBool, Arc};
+
+        let genesis = build_genesis_block_with_bits(easy_bits());
+        let mut chain = crate::ChainState::with_genesis_from(&genesis, REGTEST_MAGIC);
+        let miner = test_address();
+        let root = chain
+            .state
+            .compute_prospective_state_root(1, &miner, &[])
+            .unwrap();
+        let prev = &chain.headers[&0];
+        let ctx = BlockAssemblyContext {
+            height: BlockHeight(1),
+            previous_hash: genesis.hash(),
+            previous_timestamp: prev.timestamp,
+            state_root: root,
+            bits: easy_bits(),
+            coinbase_recipient: miner,
+        };
+        let mut block = assemble_block(&ctx, &[]).unwrap();
+        block.header.timestamp = prev.timestamp + 10;
+
+        let seed = seed_for_height(1, |h| chain.headers.get(&h).map(|hdr| hdr.hash()));
+        let job = MineJob {
+            seed: *seed.as_bytes(),
+            prev: block.header.previous_hash,
+            merkle: block.header.tx_merkle_root,
+            start: 0,
+            count: 10_000_000,
+            target: easy_bits().to_full_target(),
+        };
+        let pool = MiningPool::new(2);
+        let stop = Arc::new(AtomicBool::new(false));
+        let winner = pool.search(&job, &stop).expect("easy target must yield");
+        block.header.nonce = winner.nonce;
+        chain.apply_block(&block).unwrap();
+        assert_eq!(chain.tip.height.0, 1);
+        assert_eq!(chain.tip.hash, block.hash());
+    }
+
     #[test]
     fn test_mine_block_with_limit_respects_bound() {
         let genesis = build_genesis_block_with_bits(CompactTarget(0x20ffffff));

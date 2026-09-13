@@ -11,6 +11,7 @@
 pub mod address;
 pub mod error;
 pub mod hash;
+pub mod mine_pool;
 pub mod noise;
 pub mod randomx;
 pub mod schnorr;
@@ -18,6 +19,7 @@ pub mod schnorr;
 pub use address::*;
 pub use error::*;
 pub use hash::*;
+pub use mine_pool::*;
 pub use noise::*;
 pub use randomx::*;
 pub use schnorr::*;

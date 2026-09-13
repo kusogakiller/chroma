@@ -1734,3 +1734,107 @@ fn test_multi_block_chain_state_consistency() {
     assert_eq!(chain.tip.supply, 5 * BLOCK_REWARD_UNITS);
     assert_eq!(chain.headers.len(), 6);
 }
+
+/// Mainnet height-1 template enforces real mainnet consensus (no PoW bypass).
+///
+/// Uses the production mainnet genesis, MAINNET_MAGIC, and the retargeted
+/// mainnet target: template bits must be 0x1d00ffff, RandomX epoch 0 must
+/// resolve through the same init path the miner and the validator share,
+/// real RandomX hashes must NOT meet the mainnet target (difficulty is
+/// real), validation must reject with InvalidProofOfWork, an easy-bits
+/// block must be rejected with InvalidDifficulty, and the subsidy path must
+/// credit exactly BLOCK_REWARD_UNITS. No block is mined: mainnet difficulty
+/// makes that infeasible by design.
+#[test]
+fn test_mainnet_height1_template_and_pow_enforced() {
+    use chroma_consensus::{
+        build_genesis_block, calculate_target_for_height,
+        miner::{assemble_block, BlockAssemblyContext},
+        ChainState,
+    };
+    use chroma_core::constants::{
+        BLOCK_REWARD_UNITS, GENESIS_RANDOMX_SEED, MAINNET_MAGIC, RANDOMX_EPOCH_LENGTH,
+    };
+
+    // Epoch 0 resolves through the shared init path (also used by the miner
+    // before grinding and by apply_block before validating).
+    let genesis_seed = Hash::blake3(GENESIS_RANDOMX_SEED);
+    let _ = chroma_crypto::randomx::init_randomx_context(&genesis_seed);
+    assert!(chroma_crypto::randomx::ensure_randomx_for_height(1, |_| None).is_ok());
+    assert_eq!(
+        chroma_crypto::randomx::epoch_for_height(1, RANDOMX_EPOCH_LENGTH),
+        0
+    );
+
+    let genesis = build_genesis_block();
+    let chain = ChainState::with_genesis();
+    assert_eq!(chain.tip.hash, genesis.hash());
+
+    // Real mainnet retarget output for height 1: difficulty 1, not easy.
+    let bits = calculate_target_for_height(1, &chain.headers).unwrap();
+    assert_eq!(
+        bits.0, 0x1d00ffff,
+        "mainnet height 1 must target difficulty 1"
+    );
+    let target = bits.to_full_target();
+
+    let miner = alice_addr();
+    let state_root = chain
+        .state
+        .compute_prospective_state_root(1, &miner, &[])
+        .unwrap();
+    let prev = &chain.headers[&0];
+    let ctx = BlockAssemblyContext {
+        height: BlockHeight(1),
+        previous_hash: genesis.hash(),
+        previous_timestamp: prev.timestamp,
+        state_root,
+        bits,
+        coinbase_recipient: miner,
+    };
+    let mut block = assemble_block(&ctx, &[]).unwrap();
+    block.header.timestamp = prev.timestamp + 10;
+    // Coinbase economics on the real template: exactly 1 CHR to the miner.
+    assert_eq!(block.transactions[0].amount.0, BLOCK_REWARD_UNITS);
+    assert_eq!(block.transactions[0].recipient, miner);
+
+    // Real RandomX hashes under the mainnet target: must NOT meet it.
+    // (If any of a few plain nonces met difficulty 1, difficulty would be fake.)
+    for nonce in 0..3u64 {
+        let pow = chroma_crypto::randomx::pow_randomx(
+            &block.header.previous_hash,
+            &block.header.tx_merkle_root,
+            nonce,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            !chroma_crypto::randomx::hash_meets_target(&pow, &target),
+            "mainnet difficulty must actually hold"
+        );
+    }
+
+    // Validation enforces PoW through the normal path (no bypass).
+    let mut chain2 = ChainState::with_genesis_from(&genesis, MAINNET_MAGIC);
+    let err = chain2.apply_block(&block).unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidProofOfWork(_)),
+        "unmined mainnet block must fail PoW, got: {}",
+        err
+    );
+
+    // An easy-bits block cannot smuggle past mainnet difficulty.
+    let mut easy = block.clone();
+    easy.header.bits = CompactTarget(0x20ffffff);
+    let err = chain2.apply_block(&easy).unwrap_err();
+    assert!(
+        matches!(err, CoreError::InvalidDifficulty(_)),
+        "easy-bits mainnet block must fail difficulty, got: {}",
+        err
+    );
+
+    // Subsidy accounting on the mainnet state path: exactly 1 CHR.
+    let mut state = State::new();
+    assert_eq!(state.apply_subsidy(&miner, 1).unwrap(), BLOCK_REWARD_UNITS);
+    assert_eq!(state.total_supply(), BLOCK_REWARD_UNITS);
+}

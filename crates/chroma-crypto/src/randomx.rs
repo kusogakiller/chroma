@@ -68,7 +68,10 @@ static RANDOMX_CURRENT_EPOCH: RwLock<Option<u32>> = RwLock::new(None);
 /// Build a light-mode VM for `seed`: recommended CPU flags (JIT/HARD_AES
 /// where available; identical consensus output to interpreter mode per the
 /// reference test suite), falling back to FLAG_DEFAULT on any failure.
-fn build_vm(flags: RandomXFlag, seed: &[u8; 32]) -> std::result::Result<RandomXVM, String> {
+pub(crate) fn build_vm(
+    flags: RandomXFlag,
+    seed: &[u8; 32],
+) -> std::result::Result<RandomXVM, String> {
     let attempt = |fl: RandomXFlag| -> std::result::Result<RandomXVM, String> {
         let cache =
             RandomXCache::new(fl, seed).map_err(|e| format!("RandomX cache init failed: {e:?}"))?;
@@ -328,6 +331,21 @@ where
         Some(block_hash) => derive_seed(&block_hash),
         None => blake3(chroma_core::constants::GENESIS_RANDOMX_SEED),
     }
+}
+
+/// Resolve the canonical RandomX seed for a block height without touching
+/// any VM state. Same formula `ensure_randomx_for_height` uses internally
+/// (epoch 0 → genesis seed, else `derive_seed` of the height
+/// `epoch * EPOCH_LENGTH - SEED_LAG` block hash), exposed so mining workers
+/// can build their own worker-local VMs from identical inputs.
+pub fn seed_for_height<F>(height: u32, get_block_hash: F) -> Hash
+where
+    F: FnOnce(u32) -> Option<Hash>,
+{
+    compute_seed_for_epoch(
+        epoch_for_height(height, RANDOMX_EPOCH_LENGTH),
+        get_block_hash,
+    )
 }
 
 /// Check if the RandomX context has been initialized.

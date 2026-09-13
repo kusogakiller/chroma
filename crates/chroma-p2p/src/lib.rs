@@ -129,6 +129,9 @@ pub struct NodeConfig {
     pub data_dir: PathBuf,
     pub network: NetworkConfig,
     pub mine: bool,
+    /// Mining worker threads (`None` = automatic). Each worker owns one
+    /// RandomX VM (~256 MiB cache); validation still uses the shared worker.
+    pub mine_workers: Option<usize>,
     pub miner_address: Option<chroma_core::types::Address>,
     pub seed_resolver: Option<discovery::SeedResolver>,
     /// DANGEROUS opt-in: speak plaintext instead of Noise XX on peer
@@ -150,6 +153,7 @@ impl NodeConfig {
             data_dir: PathBuf::from("chroma_data"),
             network: NetworkConfig::mainnet(),
             mine: true,
+            mine_workers: None,
             miner_address: None,
             seed_resolver: None,
             allow_plaintext_peers: false,
@@ -180,6 +184,11 @@ impl NodeConfig {
 
     pub fn with_mine(mut self, mine: bool) -> Self {
         self.mine = mine;
+        self
+    }
+
+    pub fn with_mine_workers(mut self, workers: usize) -> Self {
+        self.mine_workers = Some(workers);
         self
     }
 
@@ -767,7 +776,11 @@ impl Node {
             .await;
         });
 
-        if (self.config.network.regtest || self.config.network.testnet) && self.config.mine {
+        // Mining runs on every network when enabled, including mainnet:
+        // template, RandomX epoch/seed, target, validation, and broadcast
+        // below are all network-agnostic (regtest/testnet/mainnet differ only
+        // in genesis, magic, and difficulty parameters).
+        if self.config.mine {
             let mining_storage = self.storage.clone();
             let mining_chain_state = self.chain_state.clone();
             let mining_event_tx = self.event_tx.clone();
@@ -777,6 +790,10 @@ impl Node {
             let mining_peer_manager = self.peer_manager.clone();
             let mining_miner_address = self.config.miner_address;
             let mining_network = self.config.network.clone();
+            let mining_workers = self
+                .config
+                .mine_workers
+                .unwrap_or_else(chroma_crypto::default_mine_workers);
             let shutdown_rx = self.shutdown_tx.as_ref().unwrap().subscribe();
             tokio::spawn(async move {
                 Self::run_miner(
@@ -790,6 +807,7 @@ impl Node {
                     shutdown_rx,
                     mining_miner_address,
                     mining_network,
+                    mining_workers,
                 )
                 .await;
             });
@@ -1954,7 +1972,6 @@ impl Node {
                                         // punishing those would ban honest
                                         // miners for losing races and split
                                         // the network (see block_rejection_score).
-                                        eprintln!("DIAGX block rejected from {}: {}", addr, e);
                                         let points = Self::block_rejection_score(&e);
                                         if points > 0 {
                                             RelayStats::note_sent(
@@ -2309,13 +2326,13 @@ impl Node {
         mut shutdown_rx: broadcast::Receiver<()>,
         miner_address: Option<chroma_core::types::Address>,
         network: NetworkConfig,
+        mine_workers: usize,
     ) {
-        use chroma_consensus::miner::{
-            assemble_block, mine_block_with_limit, BlockAssemblyContext,
-        };
+        use chroma_consensus::miner::{assemble_block, BlockAssemblyContext};
         use chroma_core::constants::TARGET_BLOCK_TIME_SECS;
         use chroma_core::hash::Hash160;
         use chroma_core::types::BlockHeight;
+        use std::sync::atomic::AtomicBool;
 
         let miner_address = miner_address.unwrap_or_else(|| {
             let mut addr = [0u8; 20];
@@ -2325,6 +2342,22 @@ impl Node {
             addr[3] = 0xEF;
             chroma_core::types::Address::from_hash160(Hash160(addr))
         });
+
+        // Worker pool lives for the whole miner lifetime: VMs are built once
+        // per seed (not per block) and joined on shutdown. Hashing itself
+        // stays inside spawn_blocking so the async runtime never starves.
+        let mut pool = chroma_crypto::MiningPool::new(mine_workers);
+        // Long-lived abort flag: set once on shutdown so an in-flight search
+        // quits promptly even after the select! below has moved on.
+        let quit = Arc::new(AtomicBool::new(false));
+        {
+            let quit = Arc::clone(&quit);
+            let mut quit_rx = shutdown_rx.resubscribe();
+            tokio::spawn(async move {
+                let _ = quit_rx.recv().await;
+                quit.store(true, Ordering::SeqCst);
+            });
+        }
 
         loop {
             tokio::select! {
@@ -2395,26 +2428,44 @@ impl Node {
                                     storage.get_canonical_hash_at_height(h).ok().flatten()
                                 },
                             );
+                            // Same canonical seed for the worker-local VMs.
+                            let seed = chroma_crypto::randomx::seed_for_height(height, |h| {
+                                storage.get_canonical_hash_at_height(h).ok().flatten()
+                            });
+                            let job = chroma_crypto::MineJob {
+                                seed: *seed.as_bytes(),
+                                prev: block.header.previous_hash,
+                                merkle: block.header.tx_merkle_root,
+                                start: 0,
+                                count: 10_000_000,
+                                target: block.header.bits.to_full_target(),
+                            };
                             // Heavy synchronous RandomX PoW must not block a
                             // tokio async worker: handshake/accept/message
                             // tasks share the worker pool, and starving them
                             // causes spurious handshake timeouts under load.
-                            // Consensus logic is unchanged; only the thread
-                            // the nonce loop runs on moves to the blocking
-                            // pool.
+                            // Hashing runs on the pool's dedicated threads;
+                            // the blocking thread here only joins them.
+                            let quit = Arc::clone(&quit);
+                            let workers = pool.worker_count();
                             let mined = tokio::task::spawn_blocking(move || {
-                                let mut b = block;
-                                let r = mine_block_with_limit(&mut b, 10_000_000);
-                                (b, r)
+                                let r = pool.search(&job, &quit);
+                                (pool, block, r)
                             })
                             .await;
-                            let (block, mine_res) = match mined {
+                            let (pool_back, mut block, mine_res) = match mined {
                                 Ok(v) => v,
-                                Err(_) => continue,
+                                Err(_) => {
+                                    pool = chroma_crypto::MiningPool::new(workers);
+                                    continue;
+                                }
                             };
-                            if let Ok(()) = mine_res {
+                            pool = pool_back;
+                            if let Some(found) = mine_res {
+                                block.header.nonce = found.nonce;
                                 let mut cs = chain_state.write().await;
-                                if let Ok(()) = cs.apply_block(&block) {
+                                match cs.apply_block(&block) {
+                                    Ok(()) => {
                                     let block_hash = block.hash();
                                     let tip = &cs.tip;
                                     let persisted = chroma_storage::PersistedTip {
@@ -2445,8 +2496,10 @@ impl Node {
                                         let h = Hash::blake3(&encoded);
                                         mp.remove_transaction(&h);
                                     }
-                                } else {
-                                    eprintln!("Mined block rejected: block validation failed");
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Mined block rejected: height={} err={}", block.header.height.0, e);
+                                    }
                                 }
                             }
                         }
