@@ -1,6 +1,6 @@
 # Chroma
 
-Rustで書かれた、独立したProof-of-Workブロックチェーンです。ティッカーはCHRです。
+Rustで書かれた、独立したProof-of-Workブロックチェーンです。ティッカーはCHMです。
 
 まだ開発の初期段階です。仕様は[`protocol/SPEC.md`](protocol/SPEC.md)に書いてあります。
 
