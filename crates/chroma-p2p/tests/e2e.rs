@@ -2452,7 +2452,7 @@ fn empty_resolver() -> chroma_p2p::discovery::SeedResolver {
 
 fn mainnet_genesis_hash() -> Hash {
     use chroma_core::types::CompactTarget;
-    chroma_consensus::build_genesis_block_with_bits(CompactTarget(0x1d00ffff)).hash()
+    chroma_consensus::build_genesis_block_with_bits(CompactTarget(0x1f00a7c5)).hash()
 }
 
 fn regtest_genesis_hash() -> Hash {

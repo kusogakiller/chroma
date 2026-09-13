@@ -377,13 +377,12 @@ mod tests {
     }
 
     /// MAXIMUM_TARGET boundary, reconstructed byte-exact:
-    /// bytes [00, 03, FF, FF, C0, 00×27] (~4× genesis target).
+    /// bytes [00, 02, 9F, 14, 00×28] (~4× genesis target).
     fn maximum_target_bytes() -> [u8; 32] {
         let mut t = [0u8; 32];
-        t[1] = 0x03;
-        t[2] = 0xFF;
-        t[3] = 0xFF;
-        t[4] = 0xC0;
+        t[1] = 0x02;
+        t[2] = 0x9f;
+        t[3] = 0x14;
         t
     }
 
@@ -394,34 +393,34 @@ mod tests {
         // Canonical compact of the boundary value.
         assert_eq!(
             CompactTarget::from_full_target(&max),
-            CompactTarget(0x1F03FFFF)
+            CompactTarget(0x1f029f14)
         );
-        // Precision absorption: MAX±1 (5th byte C0→C1/BF, below mantissa
+        // Precision absorption: MAX±1 (5th byte 00→01/FF, below mantissa
         // resolution) map to the same compact. Documented Bitcoin-style
         // behavior — consensus compares full U256 values, never compacts.
         let mut plus = max;
-        plus[4] = 0xC1;
+        plus[4] = 0x01;
         assert_eq!(
             CompactTarget::from_full_target(&plus),
-            CompactTarget(0x1F03FFFF)
+            CompactTarget(0x1f029f14)
         );
         let mut minus = max;
-        minus[4] = 0xBF;
+        minus[4] = 0xFF;
         assert_eq!(
             CompactTarget::from_full_target(&minus),
-            CompactTarget(0x1F03FFFF)
+            CompactTarget(0x1f029f14)
         );
         // Just below / above as full values: canonical compacts straddle it.
-        let below_full = CompactTarget(0x1F03FFFF).to_full_target();
+        let below_full = CompactTarget(0x1f029f13).to_full_target();
         assert!(U256::from_be_bytes(&below_full) <= max_u);
-        let above_full = CompactTarget(0x1F04FFFF).to_full_target();
+        let above_full = CompactTarget(0x1f029f15).to_full_target();
         assert!(U256::from_be_bytes(&above_full) > max_u);
         // Roundtrip of the boundary compact is lossy in sub-mantissa bytes
-        // (C0→00) — pinned, pre-existing behavior, harmless because the
+        // (00→00) — pinned, pre-existing behavior, harmless because the
         // retarget hold compares numeric targets and returns header bits
         // verbatim instead of roundtripping them.
-        let rt = CompactTarget::from_full_target(&CompactTarget(0x1F03FFFF).to_full_target());
-        assert_eq!(rt, CompactTarget(0x1F03FFFF));
+        let rt = CompactTarget::from_full_target(&CompactTarget(0x1f029f14).to_full_target());
+        assert_eq!(rt, CompactTarget(0x1f029f14));
     }
 
     #[test]

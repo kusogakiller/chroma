@@ -118,7 +118,7 @@ fn test_frozen_constants_match_spec() {
     assert_eq!(MAX_TRANSACTION_SIZE, 65536);
     assert_eq!(MTP_WINDOW, 7);
     assert_eq!(chroma_core::constants::ADDRESS_HRP, "chr");
-    assert_eq!(GENESIS_TARGET_BITS, 0x1d00ffff);
+    assert_eq!(GENESIS_TARGET_BITS, 0x1f00a7c5);
     assert_eq!(GENESIS_TIMESTAMP, 1767225600);
 }
 

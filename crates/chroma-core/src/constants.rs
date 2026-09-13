@@ -40,7 +40,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Genesis
 pub const GENESIS_TIMESTAMP: u64 = 1767225600; // 2026-01-01 00:00:00 UTC
-pub const GENESIS_TARGET_BITS: u32 = 0x1d00ffff; // Difficulty 1
+pub const GENESIS_TARGET_BITS: u32 = 0x1f00a7c5;
 
 /// Timestamp validation
 pub const MTP_WINDOW: usize = 7; // Median Time Past window

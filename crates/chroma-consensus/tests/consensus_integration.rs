@@ -60,7 +60,7 @@ fn test_frozen_constants_match_spec() {
     assert_eq!(MAX_TRANSACTION_SIZE, 65536);
     assert_eq!(MTP_WINDOW, 7);
     assert_eq!(chroma_core::constants::ADDRESS_HRP, "chr");
-    assert_eq!(GENESIS_TARGET_BITS, 0x1d00ffff);
+    assert_eq!(GENESIS_TARGET_BITS, 0x1f00a7c5);
     assert_eq!(GENESIS_TIMESTAMP, 1767225600);
 }
 
@@ -70,7 +70,7 @@ fn test_mainnet_genesis_hash_is_pinned() {
     let hash = genesis.hash();
     assert_eq!(
         hash.to_hex(),
-        "aa49c7aedb454e70623b9e5f0a5b0f2ad7245f646df5906c2ab97665c2db8374",
+        "3410367ee410eddc38c7fe749eb256e18a05d7e62845c0bab122e359b4193b37",
         "mainnet genesis hash must not change without a hard fork"
     );
 }
@@ -1738,7 +1738,7 @@ fn test_multi_block_chain_state_consistency() {
 /// Mainnet height-1 template enforces real mainnet consensus (no PoW bypass).
 ///
 /// Uses the production mainnet genesis, MAINNET_MAGIC, and the retargeted
-/// mainnet target: template bits must be 0x1d00ffff, RandomX epoch 0 must
+    /// mainnet target: template bits must be 0x1f00a7c5, RandomX epoch 0 must
 /// resolve through the same init path the miner and the validator share,
 /// real RandomX hashes must NOT meet the mainnet target (difficulty is
 /// real), validation must reject with InvalidProofOfWork, an easy-bits
@@ -1773,8 +1773,8 @@ fn test_mainnet_height1_template_and_pow_enforced() {
     // Real mainnet retarget output for height 1: difficulty 1, not easy.
     let bits = calculate_target_for_height(1, &chain.headers).unwrap();
     assert_eq!(
-        bits.0, 0x1d00ffff,
-        "mainnet height 1 must target difficulty 1"
+        bits.0, 0x1f00a7c5,
+        "mainnet height 1 must target ~10s block time"
     );
     let target = bits.to_full_target();
 

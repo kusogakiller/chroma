@@ -361,7 +361,7 @@ impl CanonicalDecode for Address {
 pub struct CompactTarget(pub u32);
 
 impl CompactTarget {
-    /// Difficulty 1 (genesis)
+    /// Compact target for difficulty 1
     pub const DIFFICULTY_1: CompactTarget = CompactTarget(0x1d00ffff);
 
     /// Convert to full 256-bit target

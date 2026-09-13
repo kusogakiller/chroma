@@ -137,14 +137,13 @@ const MINIMUM_TARGET: [u8; 32] = {
 
 /// Maximum target (lowest difficulty).
 /// ~4× genesis target to allow one full difficulty decrease adjustment.
-/// Genesis target: CompactTarget 0x1F00FFFF = 0x00FFFF × 2^(8*(31-2)) = 0x00FFFF × 2^232
-/// MAXIMUM_TARGET = 4 × genesis = 0x03FFFFC0 × 2^224
+/// Genesis target: CompactTarget 0x1f00a7c5
+/// MAXIMUM_TARGET = 4 × genesis = 0x1f029f14
 const MAXIMUM_TARGET: [u8; 32] = {
     let mut t = [0u8; 32];
-    t[1] = 0x03;
-    t[2] = 0xFF;
-    t[3] = 0xFF;
-    t[4] = 0xC0;
+    t[1] = 0x02;
+    t[2] = 0x9f;
+    t[3] = 0x14;
     t
 };
 
@@ -194,7 +193,7 @@ pub fn calculate_target_for_height(
     // the compact encoding.
     //
     // Reachability: mainnet can never present such a current. Its genesis
-    // (0x1d00ffff) is within bounds, every validated retarget lands within
+    // (0x1f00a7c5) is within bounds, every validated retarget lands within
     // [MINIMUM_TARGET, MAXIMUM_TARGET] (absolute clamp below), other heights
     // carry forward unchanged, and validation pins header.bits to the
     // computed expectation at every height — so no valid mainnet chain state
@@ -784,10 +783,15 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let d_before =
-            chroma_core::types::Difficulty::from_bits(CompactTarget(GENESIS_TARGET_BITS));
-        let d_after = chroma_core::types::Difficulty::from_bits(target);
-        assert!(d_after > d_before, "blocks too fast → difficulty increases");
+        let target_before = U256::from_be_bytes(
+            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
+        );
+        let target_after = U256::from_be_bytes(&target.to_full_target());
+        // Blocks 2× too fast → target shrinks (harder).
+        assert!(
+            target_after < target_before,
+            "blocks too fast → target decreases"
+        );
     }
 
     #[test]
@@ -812,14 +816,14 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let d_before =
-            chroma_core::types::Difficulty::from_bits(CompactTarget(GENESIS_TARGET_BITS));
-        let d_after = chroma_core::types::Difficulty::from_bits(target);
-        // Blocks 4× too slow → target tries to grow 4× but is capped at MAXIMUM_TARGET (genesis).
-        // So difficulty stays at 1.
+        let target_before = U256::from_be_bytes(
+            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
+        );
+        let target_after = U256::from_be_bytes(&target.to_full_target());
+        // Blocks 4× too slow → target grows (easier) or stays.
         assert!(
-            d_after <= d_before,
-            "blocks too slow → difficulty should not increase"
+            target_after >= target_before,
+            "blocks too slow → target should not decrease"
         );
     }
 
@@ -846,13 +850,16 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let d_before =
-            chroma_core::types::Difficulty::from_bits(CompactTarget(GENESIS_TARGET_BITS));
-        let d_after = chroma_core::types::Difficulty::from_bits(target);
+        let target_before = U256::from_be_bytes(
+            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
+        );
+        let target_after = U256::from_be_bytes(&target.to_full_target());
 
-        assert!(d_after > d_before);
+        // Target decreased (harder) but clamped: new_target >= old_target / MAX_DIFFICULTY_INCREASE_FACTOR
+        assert!(target_after < target_before);
+        let min_allowed = target_before.div_rem(&U256::from_u64(MAX_DIFFICULTY_INCREASE_FACTOR)).0;
         assert!(
-            d_after.0 <= d_before.0 * MAX_DIFFICULTY_INCREASE_FACTOR,
+            target_after >= min_allowed,
             "increase clamped to {}x",
             MAX_DIFFICULTY_INCREASE_FACTOR
         );
@@ -1037,12 +1044,14 @@ mod tests {
         );
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let d_before =
-            chroma_core::types::Difficulty::from_bits(CompactTarget(GENESIS_TARGET_BITS));
-        let d_after = chroma_core::types::Difficulty::from_bits(target);
+        let target_before = U256::from_be_bytes(
+            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
+        );
+        let target_after = U256::from_be_bytes(&target.to_full_target());
+        // Blocks slower than target → target grows (easier).
         assert!(
-            d_after < d_before,
-            "blocks slower than target → difficulty decreases"
+            target_after > target_before,
+            "blocks slower than target → target increases"
         );
     }
 
@@ -1153,10 +1162,14 @@ mod tests {
             );
         }
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let d_before =
-            chroma_core::types::Difficulty::from_bits(CompactTarget(GENESIS_TARGET_BITS));
-        let d_after = chroma_core::types::Difficulty::from_bits(target);
-        assert!(d_after > d_before, "fast blocks → difficulty increases");
+        let target_before = U256::from_be_bytes(
+            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
+        );
+        let target_after = U256::from_be_bytes(&target.to_full_target());
+        assert!(
+            target_after < target_before,
+            "fast blocks → target decreases"
+        );
     }
 
     /// Reference implementation of the pre-hold retarget algorithm: the exact
@@ -1253,11 +1266,11 @@ mod tests {
     /// [MINIMUM_TARGET, MAXIMUM_TARGET] (asserted as a test precondition).
     fn production_currents() -> Vec<CompactTarget> {
         vec![
-            CompactTarget(GENESIS_TARGET_BITS), // 0x1d00ffff difficulty 1
+            CompactTarget(GENESIS_TARGET_BITS), // 0x1f00a7c5
             CompactTarget(0x1c00ffff),          // harder, in bounds
             CompactTarget(0x1e00ffff),          // easier, in bounds
             CompactTarget(0x1e0fffff),          // much easier, still in bounds
-            CompactTarget(0x1F03FFFF),          // canonical form of MAXIMUM_TARGET: just below max
+            CompactTarget(0x1f029f13),          // just below MAXIMUM_TARGET
             CompactTarget(0x1700FFFF),          // near-minimum canonical
             CompactTarget(0x1d00fffe),          // mantissa edge
             CompactTarget(0x1d010000),          // mantissa edge
@@ -1358,9 +1371,9 @@ mod tests {
 
     #[test]
     fn test_retarget_boundary_currents() {
-        // current == just below MAXIMUM (canonical 0x1F03FFFF): both
+        // current == just below MAXIMUM_TARGET (0x1f029f13): both
         // algorithms agree and stay in bounds.
-        let below = CompactTarget(0x1F03FFFF);
+        let below = CompactTarget(0x1f029f13);
         assert!(
             U256::from_be_bytes(&below.to_full_target()) <= U256::from_be_bytes(&MAXIMUM_TARGET)
         );
@@ -1373,11 +1386,11 @@ mod tests {
                 actual
             );
         }
-        // current just above MAXIMUM (0x1F04FFFF): the ONLY intentional
+        // current just above MAXIMUM_TARGET (0x1f029f15): the ONLY intentional
         // divergence class — hold returns the input bit-exact, while the old
         // algorithm always recomputed (epoch/absolute clamps) and therefore
         // never returned its input unchanged.
-        let above = CompactTarget(0x1F04FFFF);
+        let above = CompactTarget(0x1f029f15);
         let min_abs = U256::from_be_bytes(&MINIMUM_TARGET);
         let max_abs = U256::from_be_bytes(&MAXIMUM_TARGET);
         assert!(U256::from_be_bytes(&above.to_full_target()) > max_abs);
@@ -1441,12 +1454,13 @@ mod tests {
             }
         }
         // Anchor the historical shock value: regtest easy bits at ideal
-        // cadence used to clamp to mainnet-grade 0x1f03ffff (~16k× harder).
+        // cadence used to clamp to mainnet-grade difficulty. Now the reference
+        // clamps to MAXIMUM_TARGET instead.
         let headers = chain_with_bits(CompactTarget(0x20ffffff), 9, 90);
-        assert_eq!(
-            reference_retarget_pre_hold(10, &headers).unwrap(),
-            CompactTarget(0x1F03FFFF)
-        );
+        let ref_result = reference_retarget_pre_hold(10, &headers).unwrap();
+        let max_target = U256::from_be_bytes(&MAXIMUM_TARGET);
+        let ref_u256 = U256::from_be_bytes(&ref_result.to_full_target());
+        assert_eq!(ref_u256, max_target, "reference must clamp to MAXIMUM_TARGET");
     }
 
     #[test]
@@ -1727,7 +1741,7 @@ mod tests {
 
     #[test]
     fn test_genesis_target_bits_value() {
-        assert_eq!(GENESIS_TARGET_BITS, 0x1d00ffff);
+        assert_eq!(GENESIS_TARGET_BITS, 0x1f00a7c5);
     }
 
     #[test]
