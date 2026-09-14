@@ -47,15 +47,13 @@ fn test_randomx_epoch1000_live_chain_boundary() {
 
     let genesis = build_genesis_for_network(&NetworkKind::Regtest);
     let genesis_hash = genesis.hash();
-    let mut chain =
-        chroma_consensus::ChainState::with_genesis_from(&genesis, REGTEST_MAGIC);
+    let mut chain = chroma_consensus::ChainState::with_genesis_from(&genesis, REGTEST_MAGIC);
     assert_eq!(chain.tip.height.0, 0);
 
     let storage = chroma_storage::Storage::open_temporary().unwrap();
     storage.apply_block(&genesis).unwrap();
-    let genesis_work = chroma_crypto::randomx::calculate_work(
-        &genesis.header.bits.to_full_target(),
-    );
+    let genesis_work =
+        chroma_crypto::randomx::calculate_work(&genesis.header.bits.to_full_target());
     storage
         .put_tip(&chroma_storage::PersistedTip {
             height: 0,
@@ -79,8 +77,7 @@ fn test_randomx_epoch1000_live_chain_boundary() {
             let tip = chain.best_tip();
             (tip.hash, tip.header.timestamp)
         };
-        let bits =
-            chroma_consensus::calculate_target_for_height(height, &chain.headers).unwrap();
+        let bits = chroma_consensus::calculate_target_for_height(height, &chain.headers).unwrap();
         // Easy regtest target must hold across all 1001 blocks (hold-steady).
         assert_eq!(
             bits.0, 0x20ffffff,
@@ -118,7 +115,10 @@ fn test_randomx_epoch1000_live_chain_boundary() {
         // Validator side: apply_block re-ensures the same epoch seed
         // internally, then validate_block runs pow_randomx + target check.
         chain.apply_block(&block).unwrap_or_else(|e| {
-            panic!("height {}: production validation must succeed: {}", height, e)
+            panic!(
+                "height {}: production validation must succeed: {}",
+                height, e
+            )
         });
 
         assert_eq!(chain.tip.height.0, height);
@@ -170,7 +170,7 @@ fn test_randomx_epoch1000_live_chain_boundary() {
         vec![1, 1000],
         "only height 1 (initial init) and 1000 (epoch transition) may re-init"
     );
-    let seed_block_height = 1 * RANDOMX_EPOCH_LENGTH - RANDOMX_SEED_LAG;
+    let seed_block_height = RANDOMX_EPOCH_LENGTH - RANDOMX_SEED_LAG;
     assert_eq!(seed_block_height, 900);
     let expected_epoch1_seed = derive_seed(&hashes[&900]);
     assert_ne!(
@@ -179,8 +179,8 @@ fn test_randomx_epoch1000_live_chain_boundary() {
     );
     // The live VM must now serve the epoch-1 seed: a fresh ensure for epoch 1
     // is a no-op (already current), proving miner & validator converged.
-    let again = ensure_randomx_for_height(1001, |h| hashes.get(&h).cloned())
-        .expect("ensure must succeed");
+    let again =
+        ensure_randomx_for_height(1001, |h| hashes.get(&h).cloned()).expect("ensure must succeed");
     assert!(
         !again,
         "epoch-1 context must already be current after the boundary"
@@ -209,10 +209,7 @@ fn test_randomx_epoch1000_live_chain_boundary() {
         assert!(seed_ok.is_ok(), "restart: seed resolution must succeed");
         if epoch == 1 {
             // Stored seed preimage must be height 900.
-            let preimage = storage
-                .get_canonical_hash_at_height(900)
-                .unwrap()
-                .unwrap();
+            let preimage = storage.get_canonical_hash_at_height(900).unwrap().unwrap();
             assert_eq!(preimage, hashes[&900]);
             assert_eq!(derive_seed(&preimage), expected_epoch1_seed);
         }

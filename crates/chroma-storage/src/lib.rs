@@ -555,6 +555,78 @@ impl Storage {
         Ok(())
     }
 
+    /// Atomically commit a sequence of blocks, the final tip, and the final
+    /// state in a single sled batch. This is the reorg-capable variant of
+    /// `commit_block`: a fork reorg applies several branch blocks at once,
+    /// and all of them must be persisted (headers, blocks, height↔hash
+    /// mappings) together with the new tip/state so a restart reconstructs
+    /// the exact new canonical chain — never a mix of old and new heights.
+    ///
+    /// `old_tip_height` is the canonical tip height immediately BEFORE this
+    /// commit. If the new tip is LOWER (a down-reorg: the new canonical
+    /// chain is shorter but heavier), the canonical index (`height_to_hash`)
+    /// and headers for heights `tip.height + 1 ..= old_tip_height` are
+    /// PURGED in the same atomic batch, so the canonical chain never leaks
+    /// the old chain's blocks. Historical block data and the `hash_to_height`
+    /// index of the orphaned blocks are intentionally kept.
+    pub fn commit_chain(
+        &self,
+        blocks: &[Block],
+        tip: &PersistedTip,
+        state: &State,
+        old_tip_height: u32,
+    ) -> Result<()> {
+        let mut batch = sled::Batch::default();
+
+        for block in blocks {
+            let height = block.header.height.0;
+            let header_key = header_key(height);
+            batch.insert(header_key, block.header.encode());
+
+            let block_hash = block.hash();
+            let block_k = block_key(&block_hash);
+            batch.insert(block_k, block.encode_block());
+
+            let h2h_key = hash_to_height_key(&block_hash);
+            batch.insert(h2h_key, height.to_le_bytes().to_vec());
+
+            let h2h_reverse = height_to_hash_key(height);
+            batch.insert(h2h_reverse, block_hash.as_bytes().to_vec());
+        }
+
+        // Down-reorg: purge the canonical index and headers for heights above
+        // the new tip so `get_canonical_hash_at_height` / `get_header` never
+        // resolve the old chain. Historical/orphan block DATA stays.
+        if tip.height < old_tip_height {
+            for h in (tip.height + 1)..=old_tip_height {
+                batch.remove(height_to_hash_key(h));
+                batch.remove(header_key(h));
+            }
+        }
+
+        batch.insert(TIP_KEY.to_vec(), tip.encode());
+
+        batch.insert(
+            SUPPLY_KEY.to_vec(),
+            state.total_supply().to_le_bytes().to_vec(),
+        );
+        for (addr_bytes, account) in state.accounts_iter() {
+            let addr =
+                chroma_core::types::Address::from_hash160(chroma_core::hash::Hash160(*addr_bytes));
+            let key = account_key(&addr);
+            let mut data = Vec::with_capacity(16);
+            data.extend_from_slice(&account.balance.to_le_bytes());
+            data.extend_from_slice(&account.nonce.to_le_bytes());
+            batch.insert(key, data);
+        }
+
+        self.db
+            .apply_batch(batch)
+            .map_err(|e| CoreError::Storage(format!("commit_chain: {}", e)))?;
+
+        Ok(())
+    }
+
     /// Store all accounts from a State.
     pub fn put_state(&self, state: &State) -> Result<()> {
         self.put_supply(state.total_supply())?;

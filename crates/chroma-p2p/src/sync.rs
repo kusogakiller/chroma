@@ -294,7 +294,10 @@ impl ChainSyncer {
             // Empty headers = peer has no more headers → start sequential block sync
             if self.best_height > self.synced_header_height {
                 self.state = SyncState::SyncingBlocks;
-                self.next_height = self.synced_header_height + 1;
+                // Advance monotonically: never re-request heights already
+                // requested, even if a duplicate/overlapping header batch
+                // re-enters this path.
+                self.next_height = self.next_height.max(self.synced_header_height + 1);
                 if let Some(hash) = self.known_headers.get(&self.next_height).copied() {
                     self.next_height += 1;
                     commands.push(SyncCommand::RequestBlocksFrom(hash));
@@ -335,17 +338,18 @@ impl ChainSyncer {
         if headers.len() < MAX_HEADERS_PER_RESPONSE {
             if self.best_height > self.synced_header_height {
                 self.state = SyncState::SyncingBlocks;
-                self.next_height = self.synced_header_height + 1;
+                // Advance monotonically from the highest height already
+                // requested: duplicate/overlapping header batches therefore
+                // never re-request the same block range.
+                let start = self.next_height.max(self.synced_header_height + 1);
                 let mut batch = Vec::new();
-                for h in self.next_height
-                    ..=(self.next_height + MAX_BLOCKS_PER_REQUEST as u32).min(self.best_height)
-                {
+                for h in start..=(start + MAX_BLOCKS_PER_REQUEST as u32).min(self.best_height) {
                     if let Some(hash) = self.known_headers.get(&h).copied() {
                         batch.push(hash);
                     }
                 }
                 if !batch.is_empty() {
-                    self.next_height += batch.len() as u32;
+                    self.next_height = start + batch.len() as u32;
                     self.pending_block_requests = batch[1..].to_vec();
                     commands.push(SyncCommand::GetBlocks(batch));
                 }
@@ -686,6 +690,47 @@ mod tests {
         let cmds = syncer.received_headers(vec![h1]);
 
         assert!(cmds.iter().any(|c| matches!(c, SyncCommand::GetBlocks(_))));
+    }
+
+    /// A duplicate/overlapping header batch must NEVER re-issue GetBlocks for
+    /// a range that has already been requested. This is the P2P half of the
+    /// duplicate-delivery fix: even if the peer sends the same header batch
+    /// twice (as the old multi-GetHeaders startup did), the syncer requests
+    /// each block range exactly once.
+    #[test]
+    fn test_received_headers_duplicate_batch_does_not_reissue_getblocks() {
+        let genesis = Hash::blake3(b"genesis");
+        let mut syncer = ChainSyncer::new(genesis);
+        syncer.state = SyncState::SyncingHeaders;
+
+        let mut prev = genesis;
+        let mut batch = Vec::new();
+        for h in 1..=5u32 {
+            let hdr = test_header(h, prev);
+            prev = hdr.hash();
+            batch.push(hdr);
+        }
+
+        let first = syncer.received_headers(batch.clone());
+        let getblocks = first
+            .iter()
+            .filter(|c| matches!(c, SyncCommand::GetBlocks(_)))
+            .count();
+        assert_eq!(getblocks, 1, "first batch must request blocks once");
+        assert!(syncer.next_height >= 6, "next_height must advance past 5");
+
+        // Same batch re-delivered: no GetBlocks re-issue, no next_height rewind.
+        let second = syncer.received_headers(batch);
+        assert!(
+            !second
+                .iter()
+                .any(|c| matches!(c, SyncCommand::GetBlocks(_))),
+            "duplicate header batch must not re-request blocks"
+        );
+        assert!(
+            syncer.next_height >= 6,
+            "next_height must stay monotonic across duplicate batches"
+        );
     }
 
     #[test]

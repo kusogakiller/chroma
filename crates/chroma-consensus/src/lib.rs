@@ -279,6 +279,24 @@ fn mul_div(value: &U256, num: u64, den: u64) -> Option<U256> {
     part1.checked_add(&part2)
 }
 
+/// Compute Median Time Past from the last MTP_WINDOW (7) block timestamps.
+/// For height < MTP_WINDOW, uses timestamps from genesis to height-1.
+fn compute_median_time_past_from(headers: &BTreeMap<u32, BlockHeader>, height: u32) -> u64 {
+    let mut timestamps: Vec<u64> = Vec::new();
+    let count = std::cmp::min(height as usize, MTP_WINDOW);
+    for i in 0..count {
+        let h = height - 1 - i as u32;
+        if let Some(header) = headers.get(&h) {
+            timestamps.push(header.timestamp);
+        }
+    }
+    if timestamps.is_empty() {
+        return 0;
+    }
+    timestamps.sort_unstable();
+    timestamps[timestamps.len() / 2]
+}
+
 // ============================================================================
 // Chain Tip Context
 // ============================================================================
@@ -325,8 +343,20 @@ pub struct ChainState {
     /// Alternative chain headers for forks not yet fully resolved.
     /// Capped at 100 entries to prevent memory leaks.
     pub alt_headers: HashMap<Hash, Vec<BlockHeader>>,
+    /// Full blocks backing `alt_headers`, keyed by block hash, so a winning
+    /// fork can be re-applied with its transactions intact.
+    pub alt_blocks: HashMap<Hash, Block>,
+    /// Fork blocks proven invalid during a reorg dry-run. Any buffered chain
+    /// containing one of these can never become canonical, so reorg attempts
+    /// for it are skipped — bounds the CPU cost of an attacker repeatedly
+    /// presenting a heavy-but-invalid fork.
+    pub reorg_rejected_blocks: std::collections::HashSet<Hash>,
     /// Network magic for transaction signature verification (cross-network replay protection)
     pub network_magic: [u8; 4],
+    /// Blocks applied by the most recent successful `apply_block` call (a
+    /// plain extension, or every branch block re-applied by a reorg). The
+    /// storage layer persists these so restart reconstruction is consistent.
+    pub last_applied_blocks: Vec<Block>,
 }
 
 impl ChainState {
@@ -354,63 +384,95 @@ impl ChainState {
             state: State::new(),
             tips,
             alt_headers: HashMap::new(),
+            alt_blocks: HashMap::new(),
+            reorg_rejected_blocks: std::collections::HashSet::new(),
             network_magic,
+            last_applied_blocks: Vec::new(),
         }
     }
 
     /// Validate and apply a new block to the best chain.
+    ///
+    /// Classification (SPEC §2.3, fork choice by cumulative work):
+    /// 1. A block already on the canonical chain (same height, same hash) is
+    ///    an idempotent no-op — wire re-delivery is normal and must never be
+    ///    an error, a fork, or peer-misbehavior.
+    /// 2. A block whose height already holds a different header is a
+    ///    competing block, evaluated by the cumulative work of its whole
+    ///    branch (possibly a reorg).
+    /// 3. Anything else extends the current chain.
+    ///
+    /// On success, `last_applied_blocks` records exactly the blocks applied
+    /// during this call (a plain extension, or a fork branch re-applied by a
+    /// reorg), so the storage layer can persist all of them atomically.
     pub fn apply_block(&mut self, block: &Block) -> Result<()> {
         let height = block.header.height.0;
 
-        if self.headers.contains_key(&height) {
-            return self.apply_competing_block(block);
+        // Genesis is trust-by-hash and immutable: it is installed at chain
+        // construction, never applied, and can never be replaced.
+        if height == 0 {
+            return Err(CoreError::InvalidBlock(
+                "genesis block already exists, cannot replace".to_string(),
+            ));
         }
 
-        self.apply_block_inner(block)
+        let mut applied = Vec::new();
+
+        let result = if let Some(existing) = self.headers.get(&height) {
+            if existing.hash() == block.hash() {
+                return Ok(());
+            }
+            self.apply_competing_block(block, &mut applied)
+        } else if self.alt_blocks.contains_key(&block.header.previous_hash) {
+            // Height not on the canonical chain, but its parent is a buffered
+            // fork/orphan block — extend that branch, don't force a main-chain
+            // extension (which would fail the parent link).
+            self.apply_competing_block(block, &mut applied)
+        } else {
+            // A clean extension of the canonical chain requires the parent to
+            // be the canonical header at height-1. Anything else (unknown
+            // parent, gap, future orphan) is a fork/orphan and is buffered
+            // through the competing path rather than failing outright.
+            let extends_canonical = height == 0
+                || self
+                    .headers
+                    .get(&(height - 1))
+                    .map(|h| h.hash() == block.header.previous_hash)
+                    .unwrap_or(false);
+            if extends_canonical {
+                self.apply_block_inner(block, &mut applied)
+            } else {
+                self.apply_competing_block(block, &mut applied)
+            }
+        };
+
+        if result.is_ok() {
+            // An applied block may connect previously-buffered fork branches.
+            self.try_resolve_forks(&mut applied)?;
+        }
+
+        if result.is_ok() {
+            self.last_applied_blocks = applied;
+        }
+        result
     }
 
     /// Core block application logic (validation + state update).
-    fn apply_block_inner(&mut self, block: &Block) -> Result<()> {
+    fn apply_block_inner(&mut self, block: &Block, applied: &mut Vec<Block>) -> Result<()> {
         let height = block.header.height.0;
 
-        let (previous_hash, previous_timestamp, current_supply) = if height == 0 {
-            if self.headers.contains_key(&0) {
-                return Err(CoreError::InvalidBlock(
-                    "genesis block already exists, cannot replace".to_string(),
-                ));
-            }
-            (Hash::ZERO, 0u64, 0u64)
-        } else {
-            let prev = self.headers.get(&(height - 1)).ok_or_else(|| {
-                CoreError::InvalidBlock(format!("missing parent header at height {}", height - 1))
-            })?;
-            (prev.hash(), prev.timestamp, self.tip.supply)
-        };
-
-        let mtp = self.compute_median_time_past(height);
-        let expected_bits = calculate_target_for_height(height, &self.headers)?;
+        if height == 0 && self.headers.contains_key(&0) {
+            return Err(CoreError::InvalidBlock(
+                "genesis block already exists, cannot replace".to_string(),
+            ));
+        }
 
         // Ensure RandomX context is initialized for this block's epoch
         let _ = chroma_crypto::randomx::ensure_randomx_for_height(height, |h| {
             self.headers.get(&h).map(|hdr| hdr.hash())
         });
 
-        let network_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let ctx = BlockValidationContext {
-            previous_hash,
-            expected_height: BlockHeight(height),
-            previous_timestamp,
-            median_time_past: mtp,
-            expected_bits,
-            current_supply,
-            previous_state_root: self.tip.header.state_root,
-            network_time,
-            network_magic: self.network_magic,
-        };
+        let ctx = self.build_validation_ctx(&self.headers, &self.tip, height)?;
 
         chroma_block::validate_block(block, &ctx, &mut self.state)?;
 
@@ -437,11 +499,22 @@ impl ChainState {
         self.tip = new_tip.clone();
         self.tips.insert(new_hash, new_tip);
 
+        applied.push(block.clone());
+
         Ok(())
     }
 
-    /// Handle a block at a height that already has a header (fork/reorg).
-    fn apply_competing_block(&mut self, block: &Block) -> Result<()> {
+    /// Handle a block at a height that already holds a different header, or
+    /// that extends a buffered fork branch.
+    ///
+    /// The block is buffered into the flat fork store and branches are
+    /// linked/evaluated. It is adopted only if its whole branch's cumulative
+    /// work strictly exceeds the current tip's. Outcome:
+    /// - became canonical (reorg) → Ok;
+    /// - buffered below the tip (may still grow heavier) → Ok;
+    /// - unknown parent (orphan, quarantined) → Err;
+    /// - same-height tie/loss at the tip → Err.
+    fn apply_competing_block(&mut self, block: &Block, applied: &mut Vec<Block>) -> Result<()> {
         let height = block.header.height.0;
 
         if height == 0 {
@@ -450,150 +523,340 @@ impl ChainState {
             ));
         }
 
-        let existing_header = self.headers.get(&height).unwrap().clone();
+        // Already-buffered fork block re-delivered → idempotent no-op.
+        if self.alt_blocks.contains_key(&block.hash()) {
+            return Ok(());
+        }
 
-        if block.header.previous_hash == existing_header.previous_hash {
-            // Must be at the tip — otherwise we'd need to re-apply blocks after height
-            if height != self.tip.height.0 {
+        // The parent is either a canonical header (sibling fork), a buffered
+        // fork/orphan block (branch extension), or unknown (orphan).
+        let parent_on_main = height > 0
+            && self
+                .headers
+                .get(&(height - 1))
+                .map(|h| h.hash() == block.header.previous_hash)
+                .unwrap_or(false);
+        let parent_on_alt = self.alt_blocks.contains_key(&block.header.previous_hash);
+
+        // Depth guard: a fork from a point older than the journal depth can
+        // never be adopted — reject explicitly (SPEC §2.3).
+        if parent_on_main {
+            let fork_height = height - 1;
+            let min_rollback = self.tip.height.0.saturating_sub(fork_height);
+            if min_rollback > REORG_JOURNAL_DEPTH {
                 return Err(CoreError::InvalidBlock(format!(
-                    "competing block at height {} (below tip {}), deep reorg not supported",
-                    height, self.tip.height.0
+                    "deep reorg ({} blocks) exceeds maximum supported depth ({})",
+                    min_rollback, REORG_JOURNAL_DEPTH
                 )));
             }
+        }
 
-            let existing_work = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
-                &existing_header.bits.to_full_target(),
-            ));
-            let new_work = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
-                &block.header.bits.to_full_target(),
-            ));
+        self.buffer_block(block.clone());
+        self.link_orphans();
+        self.try_resolve_forks(applied)?;
 
-            if new_work <= existing_work {
-                return Err(CoreError::InvalidBlock(format!(
-                    "competing block at height {} has less or equal work, rejecting",
-                    height
-                )));
+        let became_canonical = self
+            .headers
+            .get(&height)
+            .map(|h| h.hash() == block.hash())
+            .unwrap_or(false);
+        if became_canonical {
+            return Ok(());
+        }
+        if !parent_on_main && !parent_on_alt {
+            return Err(CoreError::InvalidBlock(format!(
+                "competing block at height {} with unknown fork point, rejecting",
+                height
+            )));
+        }
+        // A same-parent sibling of the tip that is not heavier is a first-seen
+        // tie/loss → rejected (pinned behavior). Descendants of a deeper fork
+        // at the same height as the tip (parent_on_alt) are simply buffered:
+        // their branch may still grow heavier.
+        if parent_on_main && height == self.tip.height.0 {
+            return Err(CoreError::InvalidBlock(format!(
+                "competing block at height {} has less or equal cumulative work, rejecting",
+                height
+            )));
+        }
+        Ok(())
+    }
+
+    /// Buffer a fork/orphan block into the flat store and start a one-header
+    /// branch for it. Branch assembly (linking) happens separately.
+    fn buffer_block(&mut self, block: Block) {
+        self.alt_headers
+            .insert(block.hash(), vec![block.header.clone()]);
+        self.alt_blocks.insert(block.hash(), block);
+        self.trim_alt_quarantine();
+    }
+
+    /// Merge buffered branches whose parent has since been buffered. A child
+    /// chain whose first header's `previous_hash` is ANY header of another
+    /// buffered chain is spliced onto it at that position — handling chained
+    /// orphans where the parent is an interior block, not necessarily a tip.
+    fn link_orphans(&mut self) {
+        loop {
+            let mut merge: Option<(Hash, Hash)> = None; // (parent_chain_tip, child_chain_tip)
+            let keys: Vec<Hash> = self.alt_headers.keys().copied().collect();
+            'outer: for child_tip in &keys {
+                let first_prev = match self.alt_headers.get(child_tip).and_then(|c| c.first()) {
+                    Some(h) => h.previous_hash,
+                    None => continue,
+                };
+                for parent_tip in &keys {
+                    if parent_tip == child_tip {
+                        continue;
+                    }
+                    let parent_has = self
+                        .alt_headers
+                        .get(parent_tip)
+                        .map(|c| c.iter().any(|h| h.hash() == first_prev))
+                        .unwrap_or(false);
+                    if parent_has {
+                        merge = Some((*parent_tip, *child_tip));
+                        break 'outer;
+                    }
+                }
             }
+            match merge {
+                Some((parent_tip, child_tip)) => {
+                    let parent_chain = self.alt_headers.remove(&parent_tip).unwrap();
+                    let child_chain = self.alt_headers.remove(&child_tip).unwrap();
+                    let first_prev = child_chain.first().unwrap().previous_hash;
+                    let split = parent_chain
+                        .iter()
+                        .position(|h| h.hash() == first_prev)
+                        .expect("parent chain contains parent");
+                    let mut merged = parent_chain[..=split].to_vec();
+                    merged.extend(child_chain);
+                    self.alt_headers.insert(child_tip, merged);
+                }
+                None => break,
+            }
+        }
+    }
 
+    /// Compute `(fork_height, cumulative_work)` for a buffered alt chain that
+    /// connects to the canonical chain, or `None` if it is not yet connected.
+    fn alt_chain_cumulative(&self, tip_hash: &Hash) -> Option<(u32, U256)> {
+        let chain = self.alt_headers.get(tip_hash)?;
+        let first = chain.first()?;
+        let parent_height = first.height.0.checked_sub(1)?;
+        let parent = self.headers.get(&parent_height)?;
+        if parent.hash() != first.previous_hash {
+            return None;
+        }
+        let base = self.tips.get(&parent.hash())?.cumulative_work;
+        let mut total = base;
+        for hdr in chain {
+            let w = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
+                &hdr.bits.to_full_target(),
+            ));
+            total = total.checked_add(&w)?;
+        }
+        Some((parent_height, total))
+    }
+
+    /// After any chain change, adopt the heaviest buffered fork that is
+    /// strictly heavier than the current tip and within the journal depth.
+    /// Branches are linked (out-of-order assembly) then evaluated; loops
+    /// because a reorg can connect further buffered branches.
+    fn try_resolve_forks(&mut self, applied: &mut Vec<Block>) -> Result<()> {
+        self.link_orphans();
+        loop {
+            let mut best: Option<(Hash, U256)> = None;
+            let keys: Vec<Hash> = self.alt_headers.keys().copied().collect();
+            for tip in keys {
+                // Skip chains containing a block already proven invalid during
+                // a prior reorg dry-run (they can never become canonical).
+                let poisoned = self
+                    .alt_headers
+                    .get(&tip)
+                    .map(|c| {
+                        c.iter()
+                            .any(|h| self.reorg_rejected_blocks.contains(&h.hash()))
+                    })
+                    .unwrap_or(false);
+                if poisoned {
+                    continue;
+                }
+                if let Some((_, cum)) = self.alt_chain_cumulative(&tip) {
+                    if cum > self.tip.cumulative_work
+                        && best.as_ref().map(|(_, c)| cum > *c).unwrap_or(true)
+                    {
+                        best = Some((tip, cum));
+                    }
+                }
+            }
+            match best {
+                Some((tip, _)) => self.reorg_to_alt(&tip, applied)?,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// Roll back the canonical chain to a fork point and re-apply a buffered
+    /// fork branch, advancing tip/headers/tips per height (no stale tip
+    /// reuse) and verifying the journal depth before any state mutation.
+    fn reorg_to_alt(&mut self, tip_hash: &Hash, applied: &mut Vec<Block>) -> Result<()> {
+        let (fork_height, _) = self
+            .alt_chain_cumulative(tip_hash)
+            .ok_or_else(|| CoreError::InvalidBlock("fork chain no longer connected".to_string()))?;
+
+        let rollback_depth = self.tip.height.0.saturating_sub(fork_height);
+        if rollback_depth > REORG_JOURNAL_DEPTH {
+            return Err(CoreError::InvalidBlock(format!(
+                "deep reorg ({} blocks) exceeds maximum supported depth ({})",
+                rollback_depth, REORG_JOURNAL_DEPTH
+            )));
+        }
+
+        let chain = self
+            .alt_headers
+            .get(tip_hash)
+            .cloned()
+            .expect("alt chain present");
+        let mut blocks = Vec::with_capacity(chain.len());
+        for hdr in &chain {
+            let b = self.alt_blocks.get(&hdr.hash()).cloned().ok_or_else(|| {
+                CoreError::InvalidBlock("fork chain missing block data".to_string())
+            })?;
+            blocks.push(b);
+        }
+
+        // PRE-VALIDATE the entire candidate branch against a dry-run of the
+        // fork-point state BEFORE mutating the live chain. A bad fork block
+        // (invalid PoW / state root / merkle / coinbase / …) must never be
+        // able to leave the live chain rolled back mid-reorg — the rollback
+        // below is only performed once every candidate block is known-valid.
+        {
+            let fork_point_hash = self
+                .headers
+                .get(&fork_height)
+                .map(|h| h.hash())
+                .ok_or_else(|| CoreError::InvalidBlock("fork point missing".to_string()))?;
+            let fork_tip = self
+                .tips
+                .get(&fork_point_hash)
+                .cloned()
+                .ok_or_else(|| CoreError::InvalidBlock("fork point tip missing".to_string()))?;
+
+            let mut sim_state = self.state.clone();
+            for _ in 0..rollback_depth {
+                if !sim_state.rollback_block() {
+                    return Err(CoreError::InvalidBlock(
+                        "failed to rollback state for reorg pre-validation".to_string(),
+                    ));
+                }
+            }
+            let mut sim_headers = self.headers.clone();
+            for h in (fork_height + 1)..=self.tip.height.0 {
+                sim_headers.remove(&h);
+            }
+            let mut sim_tip = fork_tip;
+            for block in &blocks {
+                let h = block.header.height.0;
+                let _ = chroma_crypto::randomx::ensure_randomx_for_height(h, |x| {
+                    sim_headers.get(&x).map(|hdr| hdr.hash())
+                });
+                let ctx = self.build_validation_ctx(&sim_headers, &sim_tip, h)?;
+                if let Err(e) = chroma_block::validate_block(block, &ctx, &mut sim_state) {
+                    // This fork block is provably invalid: no chain containing
+                    // it can ever become canonical. Memoize so the reorg
+                    // attempt is not repeated on every subsequent block.
+                    self.reorg_rejected_blocks.insert(block.hash());
+                    return Err(CoreError::InvalidBlock(format!(
+                        "candidate fork block at height {} failed reorg validation: {}",
+                        h, e
+                    )));
+                }
+                let work = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
+                    &block.header.bits.to_full_target(),
+                ));
+                sim_tip = ChainTip {
+                    height: BlockHeight(h),
+                    hash: block.hash(),
+                    header: block.header.clone(),
+                    cumulative_work: sim_tip
+                        .cumulative_work
+                        .checked_add(&work)
+                        .ok_or_else(|| CoreError::Overflow("cumulative work overflow".into()))?,
+                    supply: sim_state.total_supply(),
+                };
+                sim_headers.insert(h, block.header.clone());
+            }
+        }
+
+        // Roll back height-by-height, moving the tip to its parent each step
+        // so header/tips bookkeeping stays consistent.
+        let mut height = self.tip.height.0;
+        while height > fork_height {
             if !self.state.rollback_block() {
                 return Err(CoreError::InvalidBlock(
                     "failed to rollback state for reorg".to_string(),
                 ));
             }
-
-            let parent_height = height - 1;
-            let parent_header = self.headers.get(&parent_height).ok_or_else(|| {
-                CoreError::InvalidBlock(format!(
-                    "missing parent header at height {}",
-                    parent_height
-                ))
+            self.headers.remove(&height);
+            let old_hash = self.tip.hash;
+            self.tips.remove(&old_hash);
+            let parent = self.headers.get(&(height - 1)).ok_or_else(|| {
+                CoreError::InvalidBlock(format!("missing parent header at height {}", height - 1))
             })?;
-            let parent_tip = self
-                .tips
-                .get(&parent_header.hash())
-                .cloned()
-                .ok_or_else(|| {
-                    CoreError::InvalidBlock(format!(
-                        "missing parent tip at height {} for reorg",
-                        parent_height
-                    ))
-                })?;
-
+            let parent_tip = self.tips.get(&parent.hash()).cloned().ok_or_else(|| {
+                CoreError::InvalidBlock(format!("missing parent tip at height {}", height - 1))
+            })?;
             self.tip = parent_tip;
-
-            let old_tip_hash = existing_header.hash();
-            self.tips.remove(&old_tip_hash);
-
-            self.apply_block_inner(block)
-        } else {
-            let fork_point = self.find_fork_point_for_block(block);
-
-            match fork_point {
-                Some(fp) => {
-                    let rollback_depth = self.tip.height.0.saturating_sub(fp);
-
-                    if rollback_depth > REORG_JOURNAL_DEPTH {
-                        return Err(CoreError::InvalidBlock(format!(
-                            "deep reorg ({} blocks) exceeds maximum supported depth ({})",
-                            rollback_depth, REORG_JOURNAL_DEPTH
-                        )));
-                    }
-
-                    let new_work = U256::from_be_bytes(&chroma_crypto::randomx::calculate_work(
-                        &block.header.bits.to_full_target(),
-                    ));
-
-                    if new_work <= self.tip.cumulative_work {
-                        return Err(CoreError::InvalidBlock(format!(
-                            "competing block at height {} has less or equal cumulative work, rejecting",
-                            height
-                        )));
-                    }
-
-                    for _ in 0..rollback_depth {
-                        if !self.state.rollback_block() {
-                            return Err(CoreError::InvalidBlock(
-                                "failed to rollback state for deep reorg".to_string(),
-                            ));
-                        }
-                        self.headers.remove(&(self.tip.height.0));
-                        self.tips.remove(&self.tip.hash);
-                    }
-
-                    let fp_hash = self
-                        .headers
-                        .get(&fp)
-                        .map(|h| h.hash())
-                        .unwrap_or(Hash::ZERO);
-                    if let Some(fp_tip) = self.tips.get(&fp_hash).cloned() {
-                        self.tip = fp_tip;
-                    }
-
-                    self.apply_block_inner(block)
-                }
-                None => {
-                    let alt_chain = vec![block.header.clone()];
-                    self.alt_headers.insert(block.hash(), alt_chain);
-
-                    const MAX_ALT_HEADERS: usize = 100;
-                    if self.alt_headers.len() > MAX_ALT_HEADERS {
-                        let oldest: Vec<Hash> = self.alt_headers.keys().take(10).copied().collect();
-                        for key in oldest {
-                            self.alt_headers.remove(&key);
-                        }
-                    }
-
-                    Err(CoreError::InvalidBlock(format!(
-                        "competing block at height {} with unknown fork point, rejecting",
-                        height
-                    )))
-                }
-            }
+            height -= 1;
         }
+
+        self.alt_headers.remove(tip_hash);
+        for b in &blocks {
+            self.alt_blocks.remove(&b.hash());
+        }
+
+        for b in blocks {
+            self.apply_block_inner(&b, applied)?;
+        }
+        Ok(())
     }
 
-    /// Find the height where a competing block's chain diverges from ours.
-    fn find_fork_point_for_block(&self, block: &Block) -> Option<u32> {
-        let height = block.header.height.0;
-
-        if height > 0 {
-            if let Some(active_header) = self.headers.get(&(height - 1)) {
-                if active_header.hash() == block.header.previous_hash {
-                    return Some(height - 1);
+    /// Keep the fork quarantine bounded (mirrors the header cap). Two limits:
+    /// a chain-count cap (mirrors the historical 100-entry header cap) and a
+    /// TOTAL buffered-block cap so a single maliciously-long fork chain (an
+    /// attacker streaming thousands of linked blocks) cannot grow
+    /// `alt_blocks` unboundedly. Pruned chains have their full blocks removed
+    /// too, so the flat block store stays bounded with the bookkeeping.
+    fn trim_alt_quarantine(&mut self) {
+        const MAX_ALT_CHAINS: usize = 100;
+        const MAX_ALT_BLOCKS: usize = 500;
+        let trim = |s: &mut Self| {
+            while s.alt_headers.len() > MAX_ALT_CHAINS {
+                let oldest: Vec<Hash> = s.alt_headers.keys().take(10).copied().collect();
+                for key in oldest {
+                    if let Some(chain) = s.alt_headers.remove(&key) {
+                        for hdr in chain {
+                            s.alt_blocks.remove(&hdr.hash());
+                        }
+                    }
                 }
             }
-        }
-
-        let current_height = height.saturating_sub(1);
-        let current_prev_hash = block.header.previous_hash;
-
-        if let Some(local_header) = self.headers.get(&current_height) {
-            if local_header.hash() == current_prev_hash {
-                return Some(current_height);
+            while s.alt_blocks.len() > MAX_ALT_BLOCKS {
+                let oldest: Vec<Hash> = s.alt_headers.keys().take(1).copied().collect();
+                for key in oldest {
+                    if let Some(chain) = s.alt_headers.remove(&key) {
+                        for hdr in chain {
+                            s.alt_blocks.remove(&hdr.hash());
+                        }
+                    }
+                }
             }
-        }
-
-        None
+        };
+        trim(self);
+        // The rejected-block memo is only meaningful while the block is still
+        // buffered; prune it with the quarantine so it stays bounded too.
+        self.reorg_rejected_blocks
+            .retain(|h| self.alt_blocks.contains_key(h));
     }
 
     /// Find the fork point for a known tip hash.
@@ -664,19 +927,46 @@ impl ChainState {
     /// Compute Median Time Past from the last MTP_WINDOW (7) block timestamps.
     /// For height < MTP_WINDOW, uses timestamps from genesis to height-1.
     pub fn compute_median_time_past(&self, height: u32) -> u64 {
-        let mut timestamps: Vec<u64> = Vec::new();
-        let count = std::cmp::min(height as usize, MTP_WINDOW);
-        for i in 0..count {
-            let h = height - 1 - i as u32;
-            if let Some(header) = self.headers.get(&h) {
-                timestamps.push(header.timestamp);
-            }
-        }
-        if timestamps.is_empty() {
-            return 0;
-        }
-        timestamps.sort_unstable();
-        timestamps[timestamps.len() / 2]
+        compute_median_time_past_from(&self.headers, height)
+    }
+
+    /// Build the validation context for a block at `height` extending
+    /// `headers`/`tip`. Used both for live application and for the reorg
+    /// dry-run pre-validation (which must not mutate the live chain).
+    fn build_validation_ctx(
+        &self,
+        headers: &BTreeMap<u32, BlockHeader>,
+        tip: &ChainTip,
+        height: u32,
+    ) -> Result<BlockValidationContext> {
+        let (previous_hash, previous_timestamp, current_supply) = if height == 0 {
+            (Hash::ZERO, 0u64, 0u64)
+        } else {
+            let prev = headers.get(&(height - 1)).ok_or_else(|| {
+                CoreError::InvalidBlock(format!("missing parent header at height {}", height - 1))
+            })?;
+            (prev.hash(), prev.timestamp, tip.supply)
+        };
+
+        let mtp = compute_median_time_past_from(headers, height);
+        let expected_bits = calculate_target_for_height(height, headers)?;
+
+        let network_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        Ok(BlockValidationContext {
+            previous_hash,
+            expected_height: BlockHeight(height),
+            previous_timestamp,
+            median_time_past: mtp,
+            expected_bits,
+            current_supply,
+            previous_state_root: tip.header.state_root,
+            network_time,
+            network_magic: self.network_magic,
+        })
     }
 }
 
@@ -783,9 +1073,8 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let target_before = U256::from_be_bytes(
-            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
-        );
+        let target_before =
+            U256::from_be_bytes(&CompactTarget(GENESIS_TARGET_BITS).to_full_target());
         let target_after = U256::from_be_bytes(&target.to_full_target());
         // Blocks 2× too fast → target shrinks (harder).
         assert!(
@@ -816,9 +1105,8 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let target_before = U256::from_be_bytes(
-            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
-        );
+        let target_before =
+            U256::from_be_bytes(&CompactTarget(GENESIS_TARGET_BITS).to_full_target());
         let target_after = U256::from_be_bytes(&target.to_full_target());
         // Blocks 4× too slow → target grows (easier) or stays.
         assert!(
@@ -850,14 +1138,15 @@ mod tests {
         }
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let target_before = U256::from_be_bytes(
-            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
-        );
+        let target_before =
+            U256::from_be_bytes(&CompactTarget(GENESIS_TARGET_BITS).to_full_target());
         let target_after = U256::from_be_bytes(&target.to_full_target());
 
         // Target decreased (harder) but clamped: new_target >= old_target / MAX_DIFFICULTY_INCREASE_FACTOR
         assert!(target_after < target_before);
-        let min_allowed = target_before.div_rem(&U256::from_u64(MAX_DIFFICULTY_INCREASE_FACTOR)).0;
+        let min_allowed = target_before
+            .div_rem(&U256::from_u64(MAX_DIFFICULTY_INCREASE_FACTOR))
+            .0;
         assert!(
             target_after >= min_allowed,
             "increase clamped to {}x",
@@ -1044,9 +1333,8 @@ mod tests {
         );
 
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let target_before = U256::from_be_bytes(
-            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
-        );
+        let target_before =
+            U256::from_be_bytes(&CompactTarget(GENESIS_TARGET_BITS).to_full_target());
         let target_after = U256::from_be_bytes(&target.to_full_target());
         // Blocks slower than target → target grows (easier).
         assert!(
@@ -1162,9 +1450,8 @@ mod tests {
             );
         }
         let target = calculate_target_for_height(10, &headers).unwrap();
-        let target_before = U256::from_be_bytes(
-            &CompactTarget(GENESIS_TARGET_BITS).to_full_target(),
-        );
+        let target_before =
+            U256::from_be_bytes(&CompactTarget(GENESIS_TARGET_BITS).to_full_target());
         let target_after = U256::from_be_bytes(&target.to_full_target());
         assert!(
             target_after < target_before,
@@ -1460,7 +1747,10 @@ mod tests {
         let ref_result = reference_retarget_pre_hold(10, &headers).unwrap();
         let max_target = U256::from_be_bytes(&MAXIMUM_TARGET);
         let ref_u256 = U256::from_be_bytes(&ref_result.to_full_target());
-        assert_eq!(ref_u256, max_target, "reference must clamp to MAXIMUM_TARGET");
+        assert_eq!(
+            ref_u256, max_target,
+            "reference must clamp to MAXIMUM_TARGET"
+        );
     }
 
     #[test]

@@ -31,7 +31,7 @@ static RANDOMX_INIT: Once = Once::new();
 
 /// Initialize RandomX context for testing with the genesis seed.
 /// Uses the same seed as compute_seed_for_epoch(0): blake3(GENESIS_RANDOMX_SEED).
-/// Safe to call multiple times — only initializes once.
+/// Safe to call multiple times  Eonly initializes once.
 fn init_randomx_for_test() {
     RANDOMX_INIT.call_once(|| {
         use chroma_core::constants::GENESIS_RANDOMX_SEED;
@@ -110,7 +110,7 @@ fn make_node_config_no_mine(port: u16, data_dir: PathBuf, connect: Vec<SocketAdd
 }
 
 // ============================================================================
-// 1. REGTEST MINING — Single node mine multiple blocks
+// 1. REGTEST MINING  ESingle node mine multiple blocks
 // ============================================================================
 
 #[tokio::test]
@@ -161,7 +161,7 @@ async fn e2e_mine_blocks_on_single_node() {
 }
 
 // ============================================================================
-// 2. MINING REWARDS — Verify coinbase credits the miner
+// 2. MINING REWARDS  EVerify coinbase credits the miner
 // ============================================================================
 
 #[tokio::test]
@@ -215,7 +215,7 @@ async fn e2e_mining_rewards_credited() {
 }
 
 // ============================================================================
-// 3. CONTINUED MINING — Multiple sequential blocks
+// 3. CONTINUED MINING  EMultiple sequential blocks
 // ============================================================================
 
 #[tokio::test]
@@ -263,7 +263,7 @@ async fn e2e_continue_mining_after_first_block() {
 }
 
 // ============================================================================
-// 4. WALLET / TRANSACTION — Create wallets, fund, create tx
+// 4. WALLET / TRANSACTION  ECreate wallets, fund, create tx
 // ============================================================================
 
 #[tokio::test]
@@ -327,7 +327,7 @@ async fn e2e_wallet_create_and_fund() {
 }
 
 // ============================================================================
-// 5. TRANSACTION — Mempool add, invalid tx rejection
+// 5. TRANSACTION  EMempool add, invalid tx rejection
 // ============================================================================
 
 #[tokio::test]
@@ -384,7 +384,7 @@ async fn e2e_insufficient_balance_rejected() {
 }
 
 // ============================================================================
-// 6. TWO-NODE P2P — TCP connection and Version/VerAck handshake
+// 6. TWO-NODE P2P  ETCP connection and Version/VerAck handshake
 // ============================================================================
 
 #[tokio::test]
@@ -447,7 +447,7 @@ async fn e2e_two_node_handshake_verified() {
 }
 
 // ============================================================================
-// 7. BLOCK PROPAGATION — Mine on A, receive on B
+// 7. BLOCK PROPAGATION  EMine on A, receive on B
 // ============================================================================
 
 #[tokio::test]
@@ -544,7 +544,7 @@ async fn e2e_block_propagation_between_nodes() {
 }
 
 // ============================================================================
-// 8. BLOCK CONFIRMATION — Mine block containing tx, verify mempool cleared
+// 8. BLOCK CONFIRMATION  EMine block containing tx, verify mempool cleared
 // ============================================================================
 
 #[tokio::test]
@@ -598,7 +598,7 @@ async fn e2e_block_confirmation_clears_mempool() {
 }
 
 // ============================================================================
-// 9. PERSISTENCE / RESTART — Mine, shutdown, restart, verify recovery
+// 9. PERSISTENCE / RESTART  EMine, shutdown, restart, verify recovery
 // ============================================================================
 
 #[tokio::test]
@@ -685,7 +685,7 @@ async fn e2e_node_restart_persistence() {
 }
 
 // ============================================================================
-// 10. FORK DETECTION — detect_fork with controlled chain data
+// 10. FORK DETECTION  Edetect_fork with controlled chain data
 // ============================================================================
 
 #[test]
@@ -772,7 +772,7 @@ fn e2e_detect_fork_integration() {
 }
 
 // ============================================================================
-// 11. SECURITY — Invalid block rejection
+// 11. SECURITY  EInvalid block rejection
 // ============================================================================
 
 #[test]
@@ -1028,7 +1028,7 @@ fn e2e_security_empty_block_rejected() {
 }
 
 // ============================================================================
-// 12. CLI — Wallet creation and block height via actual binary
+// 12. CLI  EWallet creation and block height via actual binary
 //
 // NOTE: CLI tests cannot be placed here because chroma-cli is a binary crate
 // without a lib target. These tests must live in the chroma-cli crate itself.
@@ -1041,7 +1041,7 @@ fn e2e_security_empty_block_rejected() {
 //   cargo run -p chroma-cli -- mnemonic -n test
 
 // ============================================================================
-// 12. MULTI-NODE LIFECYCLE — Full flow: connect, mine, tx propagation, sync
+// 12. MULTI-NODE LIFECYCLE  EFull flow: connect, mine, tx propagation, sync
 // ============================================================================
 
 #[tokio::test]
@@ -1146,7 +1146,7 @@ async fn e2e_multi_node_full_lifecycle() {
 }
 
 // ============================================================================
-// 13. MULTI-NODE TX PROPAGATION — Wallet A sends to wallet B, node B mines it
+// 13. MULTI-NODE TX PROPAGATION  EWallet A sends to wallet B, node B mines it
 // ============================================================================
 
 #[tokio::test]
@@ -1273,7 +1273,7 @@ async fn e2e_multi_node_tx_propagation() {
 }
 
 // ============================================================================
-// 14. MULTI-NODE STATE CONSISTENCY — Both nodes agree on chain state after sync
+// 14. MULTI-NODE STATE CONSISTENCY  EBoth nodes agree on chain state after sync
 // ============================================================================
 
 #[tokio::test]
@@ -1346,7 +1346,7 @@ async fn e2e_multi_node_state_consistency() {
         }
     }
 
-    // Verify storage consistency — both should be at least height 5
+    // Verify storage consistency  Eboth should be at least height 5
     let tip1 = node1.storage().get_tip().unwrap();
     let tip2 = node2.storage().get_tip().unwrap();
     assert!(tip1.is_some(), "node A should have a tip");
@@ -1359,7 +1359,7 @@ async fn e2e_multi_node_state_consistency() {
 }
 
 // ============================================================================
-// 15. THREE-NODE P2P BLOCK PROPAGATION — Node1 mines, Node2/Node3 receive via P2P
+// 15. THREE-NODE P2P BLOCK PROPAGATION  ENode1 mines, Node2/Node3 receive via P2P
 // ============================================================================
 
 #[tokio::test]
@@ -1374,7 +1374,7 @@ async fn e2e_three_node_block_propagation() {
 
     let addr1: SocketAddr = format!("127.0.0.1:{}", port1).parse().unwrap();
 
-    // Node1: mining enabled. Node2/Node3: mining DISABLED — must receive via P2P.
+    // Node1: mining enabled. Node2/Node3: mining DISABLED  Emust receive via P2P.
     let config1 = make_node_config(port1, dir1.clone(), vec![]);
     let config2 = make_node_config_no_mine(port2, dir2.clone(), vec![addr1]);
     let config3 = make_node_config_no_mine(port3, dir3.clone(), vec![addr1]);
@@ -1589,7 +1589,7 @@ async fn e2e_three_node_block_propagation() {
 }
 
 // ============================================================================
-// TEST A: Fresh Node IBD — new node syncs from genesis via P2P
+// TEST A: Fresh Node IBD  Enew node syncs from genesis via P2P
 // ============================================================================
 
 #[tokio::test]
@@ -1602,7 +1602,7 @@ async fn e2e_ibd_fresh_node_sync() {
 
     let addr_a: SocketAddr = format!("127.0.0.1:{}", port_a).parse().unwrap();
 
-    // Start both nodes simultaneously — B connects to A and should sync via IBD
+    // Start both nodes simultaneously  EB connects to A and should sync via IBD
     let config_a = make_node_config(port_a, dir_a.clone(), vec![]);
     let config_b = make_node_config_no_mine(port_b, dir_b.clone(), vec![addr_a]);
 
@@ -1681,7 +1681,7 @@ async fn e2e_ibd_fresh_node_sync() {
 }
 
 // ============================================================================
-// TEST B: Mid-Chain Join — node joins after blocks are already mined
+// TEST B: Mid-Chain Join  Enode joins after blocks are already mined
 // ============================================================================
 
 #[tokio::test]
@@ -1760,7 +1760,7 @@ async fn e2e_ibd_mid_chain_join() {
 }
 
 // ============================================================================
-// TEST C: Multi-Peer Sync — node receives blocks from multiple peers
+// TEST C: Multi-Peer Sync  Enode receives blocks from multiple peers
 // ============================================================================
 
 #[tokio::test]
@@ -1849,7 +1849,7 @@ async fn e2e_ibd_multi_peer_sync() {
 }
 
 // ============================================================================
-// TEST D: Fork During Sync — competing chains during sync
+// TEST D: Fork During Sync  Ecompeting chains during sync
 // ============================================================================
 
 #[tokio::test]
@@ -1920,7 +1920,7 @@ async fn e2e_ibd_fork_detection() {
 }
 
 // ============================================================================
-// TEST E: Invalid Peer Handling — peer sends bad data
+// TEST E: Invalid Peer Handling  Epeer sends bad data
 // ============================================================================
 
 #[tokio::test]
@@ -1952,7 +1952,7 @@ async fn e2e_ibd_sync_failure_recording() {
 }
 
 // ============================================================================
-// TEST F: Restart During/After Sync — persistence across restarts
+// TEST F: Restart During/After Sync  Epersistence across restarts
 // ============================================================================
 
 #[tokio::test]
@@ -2027,7 +2027,7 @@ async fn e2e_ibd_restart_persistence() {
 }
 
 // ============================================================================
-// TEST G: Connection Limits — verify inbound cap is enforced
+// TEST G: Connection Limits  Everify inbound cap is enforced
 // ============================================================================
 
 #[tokio::test]
@@ -2249,7 +2249,7 @@ async fn e2e_mainnet_full_lifecycle() {
                     a_tip, b_tip
                 );
             }
-            _ => panic!("Steps 3-5: IBD failed — A should mine blocks and B should sync"),
+            _ => panic!("Steps 3-5: IBD failed  EA should mine blocks and B should sync"),
         }
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);
@@ -2461,7 +2461,7 @@ fn regtest_genesis_hash() -> Hash {
 }
 
 // ============================================================================
-// NOISE TRANSPORT TEST CLIENT — speaks the production framing/handshake
+// NOISE TRANSPORT TEST CLIENT  Espeaks the production framing/handshake
 // ============================================================================
 
 const NOISE_REGTEST_MAGIC: [u8; 4] = [0xC4, 0x52, 0x54, 0x54];
@@ -2547,13 +2547,13 @@ async fn wait_peer_connected(
 }
 
 // ============================================================================
-// SOAK / CHAOS — resource boundedness over time and under attack
+// SOAK / CHAOS  Eresource boundedness over time and under attack
 // ============================================================================
 
 /// Check one follower tip against the miner tip: true iff it is the tip or
 /// a hash-linked ancestor (≤3 back). Pure membership (no timing): with a
 /// single miner, every follower block originates from the miner, so a false
-/// here means LAG beyond the window (retry), never a fork — same-height
+/// here means LAG beyond the window (retry), never a fork  Esame-height
 /// thereby-differing hashes are impossible and would fail persistently.
 fn follower_on_chain(
     storage_a: &chroma_storage::Storage,
@@ -2720,7 +2720,7 @@ fn assert_gauges_capped(g: &SoakGauges) {
 /// Honest-network soak: 3 nodes (1 miner + 2 syncers) run ~100 s with
 /// transaction propagation and repeated churn. Gauges are sampled over time
 /// and must stay within protocol caps and return to exact baseline once
-/// activity stops — proving no monotonic resource growth in normal operation
+/// activity stops  Eproving no monotonic resource growth in normal operation
 /// (peer entries, mempool, header buffers, bans, reconnect state).
 #[tokio::test]
 async fn e2e_soak_honest_network() {
@@ -2904,7 +2904,7 @@ async fn e2e_soak_honest_network() {
     }
 }
 
-/// Chaos A/D: malicious churn — 15 rapid connect/Noise/app-handshake
+/// Chaos A/D: malicious churn  E15 rapid connect/Noise/app-handshake
 /// cycles from one IP (rotating ports AND identities), alternating clean
 /// closes with post-handshake garbage. Caps must hold throughout and every
 /// slot must be freed afterwards; an honest peer must still connect.
@@ -2983,7 +2983,7 @@ async fn e2e_chaos_inv_flood_with_honest_pair() {
     node_b.run().await.unwrap();
     assert!(wait_peer_connected(&mut events_b, 15).await);
 
-    // Attacker: full handshake, then 12 × 600-entry INVs as fast as possible.
+    // Attacker: full handshake, then 12 ÁE600-entry INVs as fast as possible.
     // Each costs one 20-point strike; the 10th bans (peer + IP).
     let key = chroma_crypto::noise::generate_static_key();
     let mut evil = noise_test_connect(addr_a, &key).await;
@@ -3034,7 +3034,7 @@ async fn e2e_chaos_inv_flood_with_honest_pair() {
     let _ = std::fs::remove_dir_all(&dir_b);
 }
 
-/// Chaos E: fake-header fork — 100 linked-but-fake headers buffering, then
+/// Chaos E: fake-header fork  E100 linked-but-fake headers buffering, then
 /// cleanup after the attacker disconnects. Proves pollution is bounded AND
 /// honest sync resumes afterwards (no bricking from squatted heights).
 #[tokio::test]
@@ -3048,7 +3048,7 @@ async fn e2e_chaos_fake_headers_cleaned() {
 
     // A mines a couple of real blocks; B syncs (honest baseline).
     // B does NOT mine: two miners fork constantly at regtest speed and
-    // same-height losers are (correctly) rejected as competing — sync
+    // same-height losers are (correctly) rejected as competing  Esync
     // assertions need a single-miner signal.
     let config_a = make_node_config(port_a, dir_a.clone(), vec![]);
     let config_b = make_node_config_no_mine(port_b, dir_b.clone(), vec![addr_a]);
@@ -3137,7 +3137,7 @@ async fn e2e_chaos_fake_headers_cleaned() {
         grown
     );
 
-    // Attacker goes silent: disconnect cleanup → sync reset → squat dropped.
+    // Attacker goes silent: disconnect cleanup ↁEsync reset ↁEsquat dropped.
     // Cleanup is immediate on disconnect (owner match); poll up to 15 s.
     drop(evil);
     let s = node_b.syncer().read().await;
@@ -3182,8 +3182,8 @@ async fn e2e_chaos_fake_headers_cleaned() {
     let _ = std::fs::remove_dir_all(&dir_b);
 }
 
-/// Chaos F: two invalid blocks ban the sender (2×100), and the mirrored IP
-/// ban rejects redial — while a pre-existing honest peer is untouched.
+/// Chaos F: two invalid blocks ban the sender (2ÁE00), and the mirrored IP
+/// ban rejects redial  Ewhile a pre-existing honest peer is untouched.
 #[tokio::test]
 async fn e2e_chaos_invalid_blocks_ban() {
     let port_a = next_port();
@@ -3203,7 +3203,7 @@ async fn e2e_chaos_invalid_blocks_ban() {
 
     // Attacker handshake, then two blocks carrying a garbage-signature
     // transaction. Fork/orphan artifacts (prev/height mismatch) deliberately
-    // score ZERO — honest miners lose races — so this test uses a failure
+    // score ZERO  Ehonest miners lose races  Eso this test uses a failure
     // that is Byzantine by construction: an invalid Schnorr signature is a
     // cryptographic exact judgment (see block_rejection_score), scoring 100
     // per block deterministically, with no mining required.
@@ -3314,7 +3314,7 @@ async fn e2e_chaos_ciphertext_failures() {
         )
         .await;
         assert!(hs.is_ok(), "handshake itself must succeed");
-        // Garbage framed as transport bytes: decrypt must fail → drop.
+        // Garbage framed as transport bytes: decrypt must fail ↁEdrop.
         wr.write_all(&[0x77u8; 64]).await.unwrap();
         drop((rd, wr));
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -3336,7 +3336,7 @@ async fn e2e_chaos_ciphertext_failures() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Chaos H: shutdown storm — in-flight Noise handshakes, an established
+/// Chaos H: shutdown storm  Ein-flight Noise handshakes, an established
 /// peer, and a dead-end reconnect target. Shutdown must close the listener,
 /// end every task, emit no post-shutdown dials, and never hang.
 #[tokio::test]
@@ -3355,7 +3355,7 @@ async fn e2e_chaos_shutdown_storm() {
 
     // Two stalled handshakes (TCP up, zero bytes) + one live peer: three
     // same-IP concurrent handshakes, exactly at the per-IP cap (a fourth
-    // would be refused — that admission bound is covered elsewhere).
+    // would be refused  Ethat admission bound is covered elsewhere).
     let _s1 = tokio::net::TcpStream::connect(addr).await.unwrap();
     let _s2 = tokio::net::TcpStream::connect(addr).await.unwrap();
     let key = chroma_crypto::noise::generate_static_key();
@@ -3365,7 +3365,7 @@ async fn e2e_chaos_shutdown_storm() {
     let failures_before = node.peer_manager().read().await.connect_failure_count();
 
     node.shutdown();
-    // Everything (handshakes, session, reconnect loop) ends promptly —
+    // Everything (handshakes, session, reconnect loop) ends promptly  E
     // far below any 10 s handshake deadline.
     tokio::time::sleep(Duration::from_secs(4)).await;
     {
@@ -3395,7 +3395,7 @@ async fn e2e_chaos_shutdown_storm() {
 
 /// Slow-drip proof: a fully-handshaked (Ready) peer that then goes silent
 /// must be evicted by idle timeout (~90 s), freeing its slot. This is the
-/// steady-state answer to drip attacks — no per-read timeout needed because
+/// steady-state answer to drip attacks  Eno per-read timeout needed because
 /// only full frames refresh liveness, and our own pings keep honest peers
 /// alive while true drips age out.
 #[tokio::test]
@@ -3446,10 +3446,10 @@ async fn e2e_soak_silent_ready_evicted() {
 
 /// Honest 5-node mesh soak: A mines; B/C follow A; D follows B; E follows C.
 /// Proves multi-hop propagation, tx inclusion across the mesh, gauge caps on
-/// every node, and same-chain convergence — with progress-aware waits (no
+/// every node, and same-chain convergence  Ewith progress-aware waits (no
 /// fixed block counts: debug PoW sets the cadence, convergence is what
 /// matters). Would catch partitioned sync, relay gaps, and per-hop stalls
-/// that 2–3 node tests cannot see.
+/// that 2 E node tests cannot see.
 #[tokio::test]
 async fn e2e_soak_five_node_mesh() {
     init_randomx_for_test();
@@ -3691,7 +3691,7 @@ async fn e2e_soak_restart_mining_continues() {
         }
         // The miner must drop the departed inbound entry: no accumulation
         // across restarts. Generous horizon: shutdown release is a causal
-        // chain (dropped task closes socket → FIN → peer EOF → cleanup) whose
+        // chain (dropped task closes socket ↁEFIN ↁEpeer EOF ↁEcleanup) whose
         // every hop needs runtime slices; under parallel-suite CPU contention
         // each hop stretches several-fold. A genuine leak never drains, so
         // asserting exact zero (not a bound) preserves leak detection.
@@ -3699,7 +3699,7 @@ async fn e2e_soak_restart_mining_continues() {
         // still up. Listener closed + entry lingering = miner-side cleanup
         // stuck; listener open = departed node never shut down.
         // NOTE (audit): extending this budget past 60 s was tried (150 s)
-        // and falsified — lingering entries survived 148 s with the
+        // and falsified  Elingering entries survived 148 s with the
         // departed listener closed, so the miss is not a horizon problem.
         // Open defect: possible half-open/duplicate-connection lifecycle
         // issue, see release-gate report. Budget intentionally NOT inflated.
@@ -3822,7 +3822,7 @@ async fn e2e_restart_shutdown_race_no_orphan() {
 }
 
 // ============================================================================
-// BOOTSTRAP / DISCOVERY DIAL PATH — fresh nodes join via discovery only
+// BOOTSTRAP / DISCOVERY DIAL PATH  Efresh nodes join via discovery only
 // (testnet network so the DNS-seed branch executes; the injected resolver
 // stands in for DNS deterministically on loopback).
 // ============================================================================
@@ -3852,7 +3852,7 @@ fn seed_resolver_for(addr: SocketAddr) -> chroma_p2p::discovery::SeedResolver {
     Arc::new(move |_: &str| vec![addr])
 }
 
-/// Test 1: discovery → dial → Noise → Ready with NO `--connect`.
+/// Test 1: discovery ↁEdial ↁENoise ↁEReady with NO `--connect`.
 #[tokio::test]
 async fn e2e_bootstrap_discovery_dials_seed() {
     init_randomx_for_test();
@@ -3915,7 +3915,7 @@ async fn e2e_bootstrap_discovery_dials_seed() {
     let _ = std::fs::remove_dir_all(&dir_b);
 }
 
-/// Test 2: discovery → headers/blocks/state sync from the seed peer.
+/// Test 2: discovery ↁEheaders/blocks/state sync from the seed peer.
 #[tokio::test]
 async fn e2e_bootstrap_discovery_syncs_chain() {
     init_randomx_for_test();
@@ -3997,8 +3997,8 @@ async fn e2e_bootstrap_duplicate_seed_no_explosion() {
         Arc::new(move |_: &str| vec![addr_a, addr_a, addr_a, addr_a, addr_a])
     };
     let port_b = next_port();
-    let config_b = make_testnet_config_no_mine(port_b, dir_b.clone(), vec![])
-        .with_seed_resolver(dup_resolver);
+    let config_b =
+        make_testnet_config_no_mine(port_b, dir_b.clone(), vec![]).with_seed_resolver(dup_resolver);
     let mut node_b = Node::new(config_b);
     node_b.run().await.unwrap();
 
@@ -4120,10 +4120,7 @@ async fn e2e_bootstrap_unavailable_seed_survives() {
     })
     .await
     .unwrap_or(false);
-    assert!(
-        connected,
-        "explicit dial must work after discovery failure"
-    );
+    assert!(connected, "explicit dial must work after discovery failure");
 
     node_a.shutdown();
     node_b.shutdown();
@@ -4134,7 +4131,7 @@ async fn e2e_bootstrap_unavailable_seed_survives() {
 
 /// Slow-drip resilience: connections that stall mid-handshake (total
 /// silence, then 1 byte + stall) must hit the Noise handshake deadline,
-/// free their slots, and — critically — must not stall the async runtime:
+/// free their slots, and  Ecritically  Emust not stall the async runtime:
 /// honest block flow continues THROUGH the attack. Afterwards the peer book
 /// must return exactly to baseline (no leaked entries/handshakes).
 #[tokio::test]
@@ -4225,9 +4222,9 @@ async fn e2e_chaos_slow_drip_releases_slots() {
 
 /// Reconnect attack cycle: an attacker sending ONE invalid tx per connection
 /// from rotating ports stays under the per-connection ban threshold (pinned
-/// unit semantics), so the test proves the complementary containments —
+/// unit semantics), so the test proves the complementary containments  E
 /// peer entries return to baseline after every disconnect, the invalid tx
-/// never lands in the mempool — then proves threshold enforcement: 4 invalid
+/// never lands in the mempool  Ethen proves threshold enforcement: 4 invalid
 /// txs in ONE connection bans the peer, mirrors the IP ban, rejects the
 /// redial, while the established honest peer keeps syncing.
 #[tokio::test]
@@ -4259,7 +4256,7 @@ async fn e2e_chaos_reconnect_invalid_tx_cycle() {
         }
     }
 
-    // Six sub-threshold cycles: connect → handshake → 1 invalid tx → drop.
+    // Six sub-threshold cycles: connect ↁEhandshake ↁE1 invalid tx ↁEdrop.
     for i in 0..6u64 {
         let key = chroma_crypto::noise::generate_static_key();
         let mut evil = noise_test_connect(addr_a, &key).await;
@@ -4310,7 +4307,7 @@ async fn e2e_chaos_reconnect_invalid_tx_cycle() {
         );
     }
 
-    // Threshold: 4 invalid txs in ONE connection → peer ban + IP mirror.
+    // Threshold: 4 invalid txs in ONE connection ↁEpeer ban + IP mirror.
     let h_before = node_b.storage().get_tip().unwrap().unwrap().height;
     let key = chroma_crypto::noise::generate_static_key();
     let mut evil = noise_test_connect(addr_a, &key).await;
@@ -4424,7 +4421,7 @@ async fn e2e_propagation_backpressure_fairness() {
     assert_eq!(a0.notfound_dropped, 0);
 
     // Contention phase: attacker completes the handshake, then never reads
-    // while flooding 5× GetData(500 real hashes) = 2500 responses into its
+    // while flooding 5ÁEGetData(500 real hashes) = 2500 responses into its
     // 64-deep queue. Kernel buffers absorb ~1 MB; the rest must drop.
     let key = chroma_crypto::noise::generate_static_key();
     let mut evil = noise_test_connect(addr_a, &key).await;
@@ -4522,7 +4519,7 @@ async fn e2e_propagation_backpressure_fairness() {
 }
 
 /// Duplicate serving + competing-block non-relay: every legitimate GetData
-/// is answered exactly once (no suppression — the requester may have lost
+/// is answered exactly once (no suppression  Ethe requester may have lost
 /// the first copy to backpressure), while a valid equal-work competitor is
 /// rejected unscored AND never relayed (the follower never sees its hash).
 #[tokio::test]
@@ -4556,7 +4553,7 @@ async fn e2e_propagation_duplicate_serving() {
     .unwrap_or(false);
     assert!(synced, "baseline sync must work");
 
-    // Same real block requested 3× → served exactly 3× (reliability over
+    // Same real block requested 3ÁEↁEserved exactly 3ÁE(reliability over
     // suppression: earlier copies may have been dropped by backpressure).
     let tip_hash = node_a.storage().get_tip().unwrap().unwrap().hash;
     let key = chroma_crypto::noise::generate_static_key();
@@ -4588,8 +4585,10 @@ async fn e2e_propagation_duplicate_serving() {
     .await
     .unwrap_or(false);
     assert!(served3, "every duplicate GetData must be served");
-    // Already-known blocks re-sent verbatim: rejected unscored every time
-    // (no relay, no ban, no state change) — the duplicate-block path.
+    // Already-known blocks re-sent verbatim: idempotent no-op  Eaccepted,
+    // never relayed, never counted as rejected (neither scored nor
+    // unscored), never a ban, never a state change. Duplicate delivery is
+    // normal on the wire and must be harmless.
     let tip_block = node_a
         .storage()
         .get_block_by_hash(&tip_hash)
@@ -4604,60 +4603,61 @@ async fn e2e_propagation_duplicate_serving() {
         );
         client.writer.send(&dup.encode()).await.unwrap();
     }
-    let dup_rejected = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if node_a.relay_stats().snapshot().blocks_rejected_unscored
-                >= rej0.blocks_rejected_unscored + 3
-            {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or(false);
-    assert!(
-        dup_rejected,
-        "already-known blocks must be rejected unscored"
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let rej1 = node_a.relay_stats().snapshot();
+    assert_eq!(
+        rej1.blocks_rejected_unscored, rej0.blocks_rejected_unscored,
+        "duplicate blocks must not count as rejected-unscored"
     );
     assert_eq!(
-        node_a.relay_stats().snapshot().blocks_rejected_scored,
-        rej0.blocks_rejected_scored
+        rej1.blocks_rejected_scored, rej0.blocks_rejected_scored,
+        "duplicate blocks must not count as rejected-scored"
+    );
+    let tip_after = node_a.storage().get_tip().unwrap().unwrap();
+    assert!(
+        tip_after.height >= tip_block.header.height.0,
+        "duplicate blocks must not roll back the chain"
+    );
+    // The duplicate block is still the canonical block at its height (no
+    // displacement / reorg caused by re-delivering an already-known block).
+    let canonical = node_a
+        .storage()
+        .get_canonical_hash_at_height(tip_block.header.height.0)
+        .unwrap()
+        .expect("canonical block at tip height");
+    assert_eq!(
+        canonical, tip_hash,
+        "duplicate blocks must not displace the canonical chain"
     );
     drop(client);
 
     // Valid equal-work competitor (same parent/height, re-mined after a
-    // timestamp bump): rejected UNSCORED and never relayed to followers.
-    let tip_block = node_a
+    // timestamp bump): handled WITHOUT any Byzantine score, never relayed to
+    // followers, sender never banned, and the canonical chain is never
+    // displaced. Whether the node rejects it outright or buffers it (as a
+    // not-yet-heavier fork, depending on whether node_a has mined a fresh
+    // tip in the meantime) is an implementation detail  Ethe security
+    // invariants are what matter and they are timing-independent.
+    let cur_tip = node_a.storage().get_tip().unwrap().unwrap();
+    let cur_tip_block = node_a
         .storage()
-        .get_block_by_hash(&tip_hash)
+        .get_block_by_hash(&cur_tip.hash)
         .unwrap()
         .unwrap();
-    let mut fork = tip_block.clone();
+    let mut fork = cur_tip_block.clone();
     fork.header.timestamp += 1;
     mine_block_with_limit(&mut fork, 10_000_000).unwrap();
     let fork_hash = fork.hash();
-    assert_ne!(fork_hash, tip_hash);
+    assert_ne!(fork_hash, cur_tip.hash);
     let rej_before = node_a.relay_stats().snapshot();
+    let tip_height_at_send = node_a.storage().get_tip().unwrap().unwrap().height;
     let key2 = chroma_crypto::noise::generate_static_key();
     let mut evil = noise_test_connect(addr_a, &key2).await;
     evil.app_handshake(NOISE_REGTEST_MAGIC).await;
     let evil_addr = evil.local_addr;
     let fmsg = Message::with_magic(MessageType::Block, fork.encode_block(), NOISE_REGTEST_MAGIC);
     evil.writer.send(&fmsg.encode()).await.unwrap();
-    let rejected = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if node_a.relay_stats().snapshot().blocks_rejected_unscored
-                > rej_before.blocks_rejected_unscored
-            {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or(false);
-    assert!(rejected, "equal-work competitor must be rejected unscored");
+    tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         node_a.relay_stats().snapshot().blocks_rejected_scored,
         rej_before.blocks_rejected_scored,
@@ -4673,7 +4673,18 @@ async fn e2e_propagation_duplicate_serving() {
             .unwrap_or(true),
         "competitor sender must not be banned"
     );
-    // The follower never observes the rejected fork (no relay of losers).
+    // The canonical chain must never include the competitor at its height.
+    if let Some(canonical) = node_a
+        .storage()
+        .get_canonical_hash_at_height(tip_height_at_send)
+        .unwrap()
+    {
+        assert_ne!(
+            canonical, fork_hash,
+            "competitor must never displace the canonical chain"
+        );
+    }
+    // The follower never observes the competitor fork (no relay of losers).
     tokio::time::sleep(Duration::from_secs(10)).await;
     assert!(
         node_b
@@ -4681,7 +4692,7 @@ async fn e2e_propagation_duplicate_serving() {
             .get_block_by_hash(&fork_hash)
             .unwrap()
             .is_none(),
-        "rejected competitor must not reach followers"
+        "competitor must not reach followers"
     );
     drop(evil);
 
@@ -4695,7 +4706,7 @@ async fn e2e_propagation_duplicate_serving() {
 
 /// Miner poison recovery: state-invalid but well-signed mempool txs (unfunded
 /// sender, wrong nonce) must NEVER halt block production. The miner skips
-/// them (they stay queued — funding or missing nonces may arrive later) and
+/// them (they stay queued  Efunding or missing nonces may arrive later) and
 /// keeps mining valid blocks that followers accept. Would catch a poisoned
 /// mempool stalling the chain, reachable via a single RPC or gossip message.
 #[tokio::test]
@@ -4732,7 +4743,7 @@ async fn e2e_miner_skips_state_invalid_txs() {
 
     // Poison: valid signatures, impossible state (unfunded sender nonce 0,
     // and nonce 99 while the account sits at nonce 0). Mempool accepts both
-    // (signature-level validation only) — mining must route around them.
+    // (signature-level validation only)  Emining must route around them.
     let poor = Wallet::generate_for_network("poison_poor", REGTEST_MAGIC);
     let recv = Wallet::generate_for_network("poison_recv", REGTEST_MAGIC);
     let tx1 = poor
@@ -4794,7 +4805,7 @@ async fn e2e_miner_skips_state_invalid_txs() {
 }
 
 // ============================================================================
-// ADVERSARIAL HANDSHAKE / NETWORK TESTS — raw sockets against a live node
+// ADVERSARIAL HANDSHAKE / NETWORK TESTS  Eraw sockets against a live node
 // ============================================================================
 
 const ADV_REGTEST_MAGIC: [u8; 4] = [0xC4, 0x52, 0x54, 0x54];
@@ -4843,7 +4854,7 @@ async fn e2e_adv_wrong_magic_dropped_honest_survives() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
 
-    // Attacker: correct framing, wrong network magic → must be dropped.
+    // Attacker: correct framing, wrong network magic ↁEmust be dropped.
     {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut evil = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -5085,7 +5096,7 @@ async fn e2e_adv_shutdown_closes_listener() {
 }
 
 // ============================================================================
-// NOISE TRANSPORT E2E — encrypted lifecycle, identity, downgrade resistance
+// NOISE TRANSPORT E2E  Eencrypted lifecycle, identity, downgrade resistance
 // ============================================================================
 
 #[tokio::test]
@@ -5204,7 +5215,7 @@ async fn e2e_noise_identity_persists_restart() {
     drop(node);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Same data dir → same identity (never silently rotated).
+    // Same data dir ↁEsame identity (never silently rotated).
     let port2 = next_port();
     let config2 = make_node_config_no_mine(port2, dir.clone(), vec![]);
     let node2 = Node::new(config2);
@@ -5321,7 +5332,7 @@ async fn e2e_noise_reconnect_same_identity() {
     };
     assert_eq!(seen_a, pub_a);
 
-    // Restart B (same data dir → same identity) and reconnect.
+    // Restart B (same data dir ↁEsame identity) and reconnect.
     node_b.shutdown();
     drop(node_b);
     drop(events_b);
@@ -5351,7 +5362,7 @@ async fn e2e_noise_reconnect_same_identity() {
 
 /// Unlinked header batches are refused WITHOUT scoring: at header layer a
 /// batch whose parent is unknown is ambiguous (honest fork ahead, our view
-/// stale, or confused peer) — never positive evidence of Byzantine behavior.
+/// stale, or confused peer)  Enever positive evidence of Byzantine behavior.
 /// Regression pin for the fail-open scoring doctrine: three unlinked batches
 /// would ban under a -100 rule, so steady score 0 proves the exemption.
 #[tokio::test]
@@ -5453,4 +5464,423 @@ async fn e2e_miner_flag_honored() {
     tokio::time::sleep(Duration::from_millis(1000)).await;
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
+}
+
+// ============================================================================
+// Sync regression: height 1 ↁE10 and height 5 ↁE10 without duplicate-block
+// rejections or bans.
+//
+// The reported mainnet blocker: Node A at height 1 connects (outbound) to
+// Node B at height 10. The old sync startup sent one GetHeaders per locator,
+// so B answered several overlapping header batches, each of which re-issued
+// GetBlocks for the same range. The duplicate blocks then hit
+// "competing block at height N (below tip 10)" and accumulated sync
+// failures. This test reproduces the exact topology: A syncs part of B's
+// chain, stops, B continues, A reconnects and must converge cleanly  E
+// exactly one block request per range, no rejections, no ban.
+// ============================================================================
+
+async fn wait_for_height(node: &Node, height: u32, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(tip) = node.storage().get_tip().unwrap() {
+            if tip.height >= height {
+                return true;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+#[tokio::test]
+async fn e2e_sync_height1_to_height10_no_duplicate_ban() {
+    init_randomx_for_test();
+
+    // Node B mines to height 10.
+    let port_b = next_port();
+    let dir_b = test_dir("sync10_b");
+    let addr_b: SocketAddr = format!("127.0.0.1:{}", port_b).parse().unwrap();
+    let mut node_b = Node::new(make_node_config(port_b, dir_b.clone(), vec![]));
+    node_b.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_b, 10, Duration::from_secs(60)).await,
+        "node B must mine 10 blocks"
+    );
+
+    // Node A (no mining) syncs to height 1, then shuts down (mid-chain).
+    let port_a = next_port();
+    let dir_a = test_dir("sync10_a");
+    let mut node_a = Node::new(make_node_config_no_mine(
+        port_a,
+        dir_a.clone(),
+        vec![addr_b],
+    ));
+    node_a.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_a, 1, Duration::from_secs(30)).await,
+        "node A must sync to height 1"
+    );
+    node_a.shutdown();
+    // Release the storage DB lock (the Node owns an Arc<Storage>); otherwise
+    // the restart on the same data dir cannot acquire the sled lock.
+    drop(node_a);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // B is already at 10; A restarts from its height-1 data dir and
+    // reconnects. The outbound sync startup now has locators [B1, genesis]
+    //  Ethe exact multi-locator shape that used to duplicate GetBlocks.
+    let mut node_a2 = Node::new(make_node_config_no_mine(
+        port_a,
+        dir_a.clone(),
+        vec![addr_b],
+    ));
+    let mut events_a2 = node_a2.event_rx().unwrap();
+    node_a2.run().await.unwrap();
+
+    let mut bad_events: Vec<String> = Vec::new();
+    let reached = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Some(tip) = node_a2.storage().get_tip().unwrap() {
+                if tip.height >= 10 {
+                    return true;
+                }
+            }
+            if let Some(NodeEvent::Error(msg)) = events_a2.recv().await {
+                bad_events.push(msg);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    let a_tip = node_a2.storage().get_tip().unwrap();
+    node_a2.shutdown();
+    node_b.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+
+    assert!(
+        reached.unwrap_or(false),
+        "node A must converge to height 10, got {:?}",
+        a_tip.map(|t| t.height)
+    );
+    let a_tip = a_tip.expect("A tip");
+    assert!(a_tip.height >= 10, "A must reach at least height 10");
+    // A's tip must be B's canonical block at that height (A is on B's chain;
+    // B keeps mining, so B's tip may be even higher than the snapshot).
+    let b_canonical = node_b
+        .storage()
+        .get_canonical_hash_at_height(a_tip.height)
+        .unwrap()
+        .expect("B must have a canonical block at A's tip height");
+    assert_eq!(
+        a_tip.hash, b_canonical,
+        "A's tip must be B's canonical block at height {}",
+        a_tip.height
+    );
+    assert!(
+        !bad_events
+            .iter()
+            .any(|m| m.contains("competing block") || m.contains("banned")),
+        "sync must not produce duplicate-block rejections or bans, got: {:?}",
+        bad_events
+    );
+}
+
+#[tokio::test]
+async fn e2e_sync_height5_to_height10_converges() {
+    init_randomx_for_test();
+
+    // Node B mines to height 10.
+    let port_b = next_port();
+    let dir_b = test_dir("sync510_b");
+    let addr_b: SocketAddr = format!("127.0.0.1:{}", port_b).parse().unwrap();
+    let mut node_b = Node::new(make_node_config(port_b, dir_b.clone(), vec![]));
+    node_b.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_b, 10, Duration::from_secs(60)).await,
+        "node B must mine 10 blocks"
+    );
+
+    // Node A syncs to height 5 and stops.
+    let port_a = next_port();
+    let dir_a = test_dir("sync510_a");
+    let mut node_a = Node::new(make_node_config_no_mine(
+        port_a,
+        dir_a.clone(),
+        vec![addr_b],
+    ));
+    node_a.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_a, 5, Duration::from_secs(30)).await,
+        "node A must sync to height 5"
+    );
+    node_a.shutdown();
+    drop(node_a);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // A reconnects from height 5; must fetch only 6..10 and converge.
+    let mut node_a2 = Node::new(make_node_config_no_mine(
+        port_a,
+        dir_a.clone(),
+        vec![addr_b],
+    ));
+    let mut events_a2 = node_a2.event_rx().unwrap();
+    node_a2.run().await.unwrap();
+    let mut bad_events: Vec<String> = Vec::new();
+    let reached = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Some(tip) = node_a2.storage().get_tip().unwrap() {
+                if tip.height >= 10 {
+                    return true;
+                }
+            }
+            if let Some(NodeEvent::Error(msg)) = events_a2.recv().await {
+                bad_events.push(msg);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+
+    let a_tip = node_a2.storage().get_tip().unwrap();
+    node_a2.shutdown();
+    node_b.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+
+    assert!(
+        reached.unwrap_or(false),
+        "node A (height 5) must converge to height 10"
+    );
+    let a_tip = a_tip.expect("A tip");
+    assert!(a_tip.height >= 10, "A must reach at least height 10");
+    let b_canonical = node_b
+        .storage()
+        .get_canonical_hash_at_height(a_tip.height)
+        .unwrap()
+        .expect("B must have a canonical block at A's tip height");
+    assert_eq!(
+        a_tip.hash, b_canonical,
+        "A's tip must be B's canonical block at height {}",
+        a_tip.height
+    );
+    assert!(
+        !bad_events
+            .iter()
+            .any(|m| m.contains("competing block") || m.contains("banned")),
+        "sync must not produce duplicate-block rejections or bans, got: {:?}",
+        bad_events
+    );
+}
+
+// ============================================================================
+// Real fork/reorg: Node A on a 10-block chain, Node B on a divergent
+// 12-block chain (same genesis, heavier). When B's fork blocks are delivered
+// to A, A must discover the common ancestor (genesis), evaluate cumulative
+// work (12 blocks > 10 blocks), roll back its branch, re-apply B's branch,
+// and converge to B's tip with matching supply/state.
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_fork_reorg_adopts_heavier_chain() {
+    init_randomx_for_test();
+
+    // A (non-mining) syncs a 12-block chain from a temporary mining node.
+    let port_m = next_port();
+    let dir_m = test_dir("reorg_mine");
+    let addr_m: SocketAddr = format!("127.0.0.1:{}", port_m).parse().unwrap();
+    let mut node_mine = Node::new(make_node_config(port_m, dir_m.clone(), vec![]));
+    node_mine.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_mine, 12, Duration::from_secs(60)).await,
+        "mining node must reach height 12"
+    );
+
+    let port_a = next_port();
+    let dir_a = test_dir("reorg_a");
+    let addr_a: SocketAddr = format!("127.0.0.1:{}", port_a).parse().unwrap();
+    let mut node_a = Node::new(make_node_config_no_mine(
+        port_a,
+        dir_a.clone(),
+        vec![addr_m],
+    ));
+    node_a.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_a, 12, Duration::from_secs(60)).await,
+        "A must sync to height 12"
+    );
+    let a_height = node_a.storage().get_tip().unwrap().unwrap().height;
+    node_mine.shutdown();
+    drop(node_mine);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // B (disconnected, heavier) mines to a strictly greater height on a
+    // divergent chain from genesis.
+    let target_height = a_height + 5;
+    let port_b = next_port();
+    let dir_b = test_dir("reorg_b");
+    let mut node_b = Node::new(make_node_config(port_b, dir_b.clone(), vec![]));
+    node_b.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_b, target_height, Duration::from_secs(90)).await,
+        "B must mine {} blocks",
+        target_height
+    );
+    // Capture B's canonical blocks 1..=target_height.
+    let mut b_blocks = Vec::new();
+    for h in 1..=target_height {
+        let hash = node_b
+            .storage()
+            .get_canonical_hash_at_height(h)
+            .unwrap()
+            .expect("B canonical");
+        let block = node_b
+            .storage()
+            .get_block_by_hash(&hash)
+            .unwrap()
+            .expect("B block");
+        b_blocks.push(block);
+    }
+    let b_tip_hash = b_blocks.last().unwrap().hash();
+    node_b.shutdown();
+    drop(node_b);
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // Inject B's fork blocks (1'..target') into A (still running, non-mining)
+    // in order over a raw connection.
+    let key = chroma_crypto::noise::generate_static_key();
+    let mut client = noise_test_connect(addr_a, &key).await;
+    client.app_handshake(NOISE_REGTEST_MAGIC).await;
+    for b in &b_blocks {
+        let msg = Message::with_magic(MessageType::Block, b.encode_block(), NOISE_REGTEST_MAGIC);
+        client.writer.send(&msg.encode()).await.unwrap();
+    }
+
+    // A must reorg to B's heavier chain.
+    let adopted = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            if let Some(hash) = node_a
+                .storage()
+                .get_canonical_hash_at_height(target_height)
+                .unwrap()
+            {
+                if hash == b_tip_hash {
+                    return true;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let a_tip = node_a.storage().get_tip().unwrap();
+    drop(client);
+    node_a.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+    let _ = std::fs::remove_dir_all(&dir_m);
+
+    assert!(
+        adopted,
+        "A must reorg to B's heavier fork (A was at {}, B at {})",
+        a_height, target_height
+    );
+    let a_tip = a_tip.expect("A tip");
+    assert_eq!(
+        a_tip.height, target_height,
+        "A tip must be at B's fork height"
+    );
+    assert_eq!(a_tip.hash, b_tip_hash, "A tip must equal B's tip");
+    assert_eq!(
+        a_tip.supply,
+        (target_height as u64) * BLOCK_REWARD_UNITS,
+        "A supply must match B's fork supply after reorg"
+    );
+}
+
+// ============================================================================
+// Inbound-only catch-up: B (ahead) dials A (behind). A only ever accepts an
+// inbound connection, so it never runs the outbound sync-startup path — the
+// periodic catch-up tick must converge A to B's height without a duplicate
+// sync loop, request storm, or ban. Convergence need not be within 30s.
+// ============================================================================
+
+#[tokio::test]
+async fn e2e_inbound_only_node_catches_up() {
+    init_randomx_for_test();
+
+    // A (non-mining) is up first with NO connect addrs — it is inbound-only.
+    let port_a = next_port();
+    let dir_a = test_dir("inbound_a");
+    let addr_a: SocketAddr = format!("127.0.0.1:{}", port_a).parse().unwrap();
+    let mut node_a = Node::new(make_node_config_no_mine(port_a, dir_a.clone(), vec![]));
+    let mut events_a = node_a.event_rx().unwrap();
+    node_a.run().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // B (mining, ahead) dials A → A sees only an inbound connection.
+    let port_b = next_port();
+    let dir_b = test_dir("inbound_b");
+    let mut node_b = Node::new(make_node_config(port_b, dir_b.clone(), vec![addr_a]));
+    node_b.run().await.unwrap();
+    assert!(
+        wait_for_height(&node_b, 10, Duration::from_secs(60)).await,
+        "B must mine 10 blocks"
+    );
+
+    // A must eventually reach height 10 via the periodic catch-up tick.
+    let converged = tokio::time::timeout(Duration::from_secs(75), async {
+        loop {
+            if let Some(tip) = node_a.storage().get_tip().unwrap() {
+                if tip.height >= 10 {
+                    return true;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let a_tip = node_a.storage().get_tip().unwrap();
+    node_a.shutdown();
+    node_b.shutdown();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+
+    assert!(converged, "inbound-only A must catch up to B's height");
+    let a_tip = a_tip.expect("A tip");
+    assert!(a_tip.height >= 10);
+    let b_canonical = node_b
+        .storage()
+        .get_canonical_hash_at_height(a_tip.height)
+        .unwrap()
+        .expect("B canonical at A's tip height");
+    assert_eq!(
+        a_tip.hash, b_canonical,
+        "A's tip must be B's canonical block at that height"
+    );
+
+    // No ban / duplicate-block rejection noise on the inbound side.
+    let mut bad = Vec::new();
+    while let Ok(ev) = events_a.try_recv() {
+        if let NodeEvent::Error(msg) = ev {
+            bad.push(msg);
+        }
+    }
+    assert!(
+        !bad.iter()
+            .any(|m| m.contains("competing block") || m.contains("banned")),
+        "inbound catch-up must not produce duplicate rejections or bans, got: {:?}",
+        bad
+    );
 }

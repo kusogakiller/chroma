@@ -539,7 +539,10 @@ impl Node {
                     state,
                     tips,
                     alt_headers: HashMap::new(),
+                    alt_blocks: HashMap::new(),
+                    reorg_rejected_blocks: std::collections::HashSet::new(),
                     network_magic: network.magic,
+                    last_applied_blocks: Vec::new(),
                 }
             }
             _ => {
@@ -752,9 +755,20 @@ impl Node {
 
         let peer_mgr_tick = peer_mgr.clone();
         let outbound_tx_tick = self.outbound_tx.as_ref().unwrap().clone();
+        let chain_state_tick = self.chain_state.clone();
+        let syncer_tick = self.syncer.clone();
+        let network_tick = self.config.network.clone();
         let shutdown_rx = self.shutdown_tx.as_ref().unwrap().subscribe();
         tokio::spawn(async move {
-            Self::run_peer_tick(peer_mgr_tick, outbound_tx_tick, shutdown_rx).await;
+            Self::run_peer_tick(
+                peer_mgr_tick,
+                outbound_tx_tick,
+                chain_state_tick,
+                syncer_tick,
+                network_tick,
+                shutdown_rx,
+            )
+            .await;
         });
 
         // Bounded reconnect for operator-configured AND discovered bootstrap
@@ -1320,19 +1334,25 @@ impl Node {
                     )));
                 }
 
-                // Send GetHeaders for each locator hash until peer responds.
-                // The first locator that the peer recognizes will cause it to
-                // send back headers from the fork point onward.
+                // Send GetHeaders for our tip: the wire carries a single
+                // start_hash, so one logical sync attempt maps to exactly ONE
+                // header request. A peer that shares our chain continues from
+                // tip+1; a peer on a different branch answers from its own
+                // genesis, which the header gate rejects cleanly (conflicting
+                // heights), and real forks are resolved at the block layer
+                // via Inv/GetData + cumulative-work reorg. Sending one
+                // request (instead of one per locator) guarantees each header
+                // batch triggers exactly one GetBlocks range, so a duplicated
+                // header batch can never re-request the same blocks.
                 let locator_hashes = s.block_locator_hashes(tip_hash, tip_height);
-                for locator in &locator_hashes {
-                    let getheaders = s.start_header_sync(addr, *locator);
-                    let msg = Message::with_magic(
-                        MessageType::GetHeaders,
-                        getheaders.encode(),
-                        network.magic,
-                    );
-                    let _ = write_tx.try_send(msg.encode());
-                }
+                let best_locator = locator_hashes.first().copied().unwrap_or(tip_hash);
+                let getheaders = s.start_header_sync(addr, best_locator);
+                let msg = Message::with_magic(
+                    MessageType::GetHeaders,
+                    getheaders.encode(),
+                    network.magic,
+                );
+                let _ = write_tx.try_send(msg.encode());
             }
         }
 
@@ -1957,21 +1977,15 @@ impl Node {
                                             e
                                         )));
                                         drop(cs);
-                                        let mut s = syncer.write().await;
-                                        s.record_sync_failure();
-                                        if s.is_peer_banned_for_sync() {
-                                            let _ = event_tx.send(NodeEvent::Error(format!(
-                                                "peer {} banned for repeated sync failures",
-                                                addr
-                                            )));
-                                        }
-                                        drop(s);
                                         // Score ONLY exact Byzantine judgments
                                         // (bad PoW/roots/coinbase/sizes/sigs).
-                                        // Fork/orphan/stale rejections score 0:
-                                        // punishing those would ban honest
-                                        // miners for losing races and split
-                                        // the network (see block_rejection_score).
+                                        // Fork/orphan/stale/duplicate rejections
+                                        // score 0: punishing those would ban
+                                        // honest miners for losing races and
+                                        // split the network. The sync-failure
+                                        // counter is advanced only for the same
+                                        // scored cases, so benign rejections can
+                                        // never accumulate toward a ban.
                                         let points = Self::block_rejection_score(&e);
                                         if points > 0 {
                                             RelayStats::note_sent(
@@ -1981,6 +1995,15 @@ impl Node {
                                                 .write()
                                                 .await
                                                 .note_invalid_object(&addr, points);
+                                            let mut s = syncer.write().await;
+                                            s.record_sync_failure();
+                                            if s.is_peer_banned_for_sync() {
+                                                let _ = event_tx.send(NodeEvent::Error(format!(
+                                                    "peer {} banned for repeated sync failures",
+                                                    addr
+                                                )));
+                                            }
+                                            drop(s);
                                         } else {
                                             RelayStats::note_sent(
                                                 &relay_stats.blocks_rejected_unscored,
@@ -1994,8 +2017,27 @@ impl Node {
                                             cumulative_work: tip.cumulative_work.to_be_bytes(),
                                             supply: tip.supply,
                                         };
-                                        let _ = storage.commit_block(&block, &persisted, &cs.state);
+                                        // Persist every block applied by this
+                                        // call. A plain extension is one block;
+                                        // a reorg re-applies the whole fork
+                                        // branch, and all of it must land in
+                                        // storage atomically so a restart
+                                        // reconstructs the new canonical chain.
+                                        let applied_blocks = cs.last_applied_blocks.clone();
+                                        let _ = storage.commit_chain(
+                                            &applied_blocks,
+                                            &persisted,
+                                            &cs.state,
+                                            old_tip_height,
+                                        );
                                         let _ = storage.flush();
+                                        // Only a block that is on the canonical
+                                        // chain at its own height advances sync
+                                        // bookkeeping. Buffered fork blocks (Ok
+                                        // but not yet canonical) must not move
+                                        // `synced_header_height` past the real
+                                        // tip.
+                                        let on_canonical = cs.tip.height.0 == block_height;
                                         drop(cs);
 
                                         chain_height.store(block_height, Ordering::Relaxed);
@@ -2025,7 +2067,7 @@ impl Node {
                                             }
                                         }
 
-                                        {
+                                        if on_canonical {
                                             let mut s = syncer.write().await;
                                             s.received_block(block_hash, block_height);
                                             if s.needs_blocks() {
@@ -2208,6 +2250,9 @@ impl Node {
     async fn run_peer_tick(
         peer_manager: Arc<RwLock<PeerManager>>,
         outbound_tx: mpsc::UnboundedSender<OutboundCommand>,
+        chain_state: Arc<RwLock<chroma_consensus::ChainState>>,
+        syncer: Arc<RwLock<ChainSyncer>>,
+        network: NetworkConfig,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
         let mut interval =
@@ -2237,6 +2282,35 @@ impl Node {
                     };
                     for addr in idle {
                         let _ = outbound_tx.send(OutboundCommand::Disconnect(addr));
+                    }
+
+                    // Periodic catch-up: a node that only accepts inbound
+                    // connections never runs the outbound sync-startup path,
+                    // so it must actively probe peers. If we are idle and a
+                    // Ready peer announced a higher height, start header sync
+                    // with the most-advanced one.
+                    {
+                        let cs = chain_state.read().await;
+                        let our_height = cs.tip.height.0;
+                        let tip_hash = cs.tip.hash;
+                        drop(cs);
+                        let mut s = syncer.write().await;
+                        if !s.is_syncing() && !s.is_caught_up() {
+                            if let Some(peer) = {
+                                let pm = peer_manager.read().await;
+                                pm.best_peer_ahead_of(our_height)
+                            } {
+                                let locators = s.block_locator_hashes(tip_hash, our_height);
+                                let locator = locators.first().copied().unwrap_or(tip_hash);
+                                let getheaders = s.start_header_sync(peer, locator);
+                                let msg = Message::with_magic(
+                                    MessageType::GetHeaders,
+                                    getheaders.encode(),
+                                    network.magic,
+                                );
+                                let _ = outbound_tx.send(OutboundCommand::Send(peer, msg));
+                            }
+                        }
                     }
                 }
                 _ = decay_interval.tick() => {
@@ -2472,6 +2546,7 @@ impl Node {
                             if let Some(found) = mine_res {
                                 block.header.nonce = found.nonce;
                                 let mut cs = chain_state.write().await;
+                                let pre_apply_tip = cs.tip.height.0;
                                 match cs.apply_block(&block) {
                                     Ok(()) => {
                                     let block_hash = block.hash();
@@ -2482,7 +2557,13 @@ impl Node {
                                         cumulative_work: tip.cumulative_work.to_be_bytes(),
                                         supply: tip.supply,
                                     };
-                                    let _ = storage.commit_block(&block, &persisted, &cs.state);
+                                    let applied_blocks = cs.last_applied_blocks.clone();
+                                    let _ = storage.commit_chain(
+                                        &applied_blocks,
+                                        &persisted,
+                                        &cs.state,
+                                        pre_apply_tip,
+                                    );
                                     let _ = storage.flush();
 
                                     chain_height.store(height, Ordering::Relaxed);

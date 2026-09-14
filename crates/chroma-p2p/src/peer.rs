@@ -346,6 +346,18 @@ impl PeerManager {
             .collect()
     }
 
+    /// The Ready peer with the greatest announced height strictly greater
+    /// than `height`, if any. Used by the periodic catch-up tick so a node
+    /// that only accepts inbound connections still converges with ahead
+    /// peers (inbound/outbound symmetry).
+    pub fn best_peer_ahead_of(&self, height: u32) -> Option<SocketAddr> {
+        self.ready_peers()
+            .into_iter()
+            .filter(|p| p.height > height)
+            .max_by_key(|p| p.height)
+            .map(|p| p.addr)
+    }
+
     pub fn connected_peers(&self) -> Vec<&PeerInfo> {
         self.peers
             .values()

@@ -148,9 +148,9 @@ fn assert_prefix_coherent(storage: &Storage, hashes: &BTreeMap<u32, Hash>, top: 
     assert_eq!(loaded.total_supply(), expect_supply);
 }
 
-/// Drop WITHOUT flush or ceremony (≈ unclean shutdown for durability
+/// Drop WITHOUT flush or ceremony (≁Eunclean shutdown for durability
 /// purposes: whatever sled recovered is what a kill would leave, minus a
-/// possible torn WAL tail — torn tails are covered by the real-kill tests).
+/// possible torn WAL tail  Etorn tails are covered by the real-kill tests).
 fn drop_reopen(dir: &Path) -> Storage {
     Storage::open(dir).unwrap()
 }
@@ -182,7 +182,7 @@ fn crash_drop_reopen_exact_prefix_repeated_100() {
 fn crash_no_flush_recovery_is_prefix_coherent() {
     // Commits WITHOUT any flush, then drop: recovery must be a coherent
     // prefix (possibly shorter than committed if the tail never reached
-    // durable storage — never torn). Documents the flush-necessity boundary.
+    // durable storage  Enever torn). Documents the flush-necessity boundary.
     let dir = test_dir("noflush");
     let storage = Storage::open(&dir).unwrap();
     let (hashes, _) = commit_prefix(&storage, 10);
@@ -204,7 +204,7 @@ fn crash_no_flush_recovery_is_prefix_coherent() {
 
 #[test]
 fn crash_duplicate_commits_are_idempotent() {
-    // Same block committed 100× (as redelivered after restarts would be):
+    // Same block committed 100ÁE(as redelivered after restarts would be):
     // records stay exact, indexes unambiguous.
     let dir = test_dir("dup100");
     let storage = Storage::open(&dir).unwrap();
@@ -291,7 +291,7 @@ fn crash_child_worker() {
             prev_ts = nts;
         }
         // Flush like every production commit path does (commit→flush is the
-        // durability unit; unflushed commits are NOT kill-safe — see the
+        // durability unit; unflushed commits are NOT kill-safe  Esee the
         // loop-mode test). Signal readiness only afterwards.
         storage.flush().unwrap();
         println!("CRASH_CHILD_READY height={}", h);
@@ -362,9 +362,9 @@ fn wait_ready(child: &mut std::process::Child) {
 
 #[test]
 fn crash_real_kill_parked_recovers_exact() {
-    // 3× real kills after flushed commits (the production durability unit):
+    // 3ÁEreal kills after flushed commits (the production durability unit):
     // recovery is EXACT every time. Unflushed commits are NOT covered here
-    // by design — see the loop-mode test for that boundary.
+    // by design  Esee the loop-mode test for that boundary.
     for round in 0..3 {
         let dir = test_dir(&format!("killpark{}", round));
         let mut child = spawn_crash_child(&dir, "park", 20);
@@ -415,8 +415,8 @@ fn crash_real_kill_parked_recovers_exact() {
 
 #[test]
 fn crash_real_kill_mid_stream_recovers_coherent_prefix() {
-    // 3× kills landing mid-commit-stream: recovery must be a COHERENT prefix
-    // (any height — atomicity means all-or-nothing per batch, never torn).
+    // 3ÁEkills landing mid-commit-stream: recovery must be a COHERENT prefix
+    // (any height  Eatomicity means all-or-nothing per batch, never torn).
     for round in 0..3 {
         let dir = test_dir(&format!("killloop{}", round));
         let mut child = spawn_crash_child(&dir, "loop", 0);
@@ -470,7 +470,7 @@ fn corruption_classification_per_record_kind() {
     drop(storage);
 
     // 1. Truncated account record (5 bytes, not 16): get_account ERRORS.
-    // (Key must match a real account: test_address(1) == [0x01, 0×19].)
+    // (Key must match a real account: test_address(1) == [0x01, 0ÁE9].)
     {
         let db = raw_sled(&dir);
         let mut key = b"accounts:".to_vec();
@@ -513,7 +513,7 @@ fn corruption_classification_per_record_kind() {
         drop(storage);
     }
     // 4. Wrong-value (valid-length) balance: SILENT at the getter level...
-    // (Key must match test_address(2) == [0x02, 0×19].)
+    // (Key must match test_address(2) == [0x02, 0ÁE9].)
     {
         let db = raw_sled(&dir);
         let mut key = b"accounts:".to_vec();
@@ -577,7 +577,7 @@ fn backup_cold_copy_restores_coherent_chain() {
 
 #[test]
 fn missing_records_classified_no_silent_merge() {
-    // Deleted individual records must degrade loudly or not at all — never
+    // Deleted individual records must degrade loudly or not at all  Enever
     // merge into a wrong-but-plausible view.
     let dir = test_dir("missingrec");
     let storage = Storage::open(&dir).unwrap();
@@ -595,8 +595,7 @@ fn missing_records_classified_no_silent_merge() {
     }
     let storage = Storage::open(&dir).unwrap();
     // Header gone, but the tip record, block store, and indexes still name
-    // height 3: stores diverge per-record (no cross-checks at this layer —
-    // chain-level coherence is enforced at startup by init_chain_state,
+    // height 3: stores diverge per-record (no cross-checks at this layer  E    // chain-level coherence is enforced at startup by init_chain_state,
     // which refuses a tip whose headers are missing).
     assert!(storage.get_header(3).unwrap().is_none());
     assert!(storage.get_tip().unwrap().unwrap().height == 5);
@@ -835,6 +834,168 @@ fn test_upgrade_downgrade_compatibility() {
     let storage_v1_again = Storage::open(&dir).unwrap();
     assert_eq!(storage_v1_again.get_tip().unwrap().unwrap().height, 3);
     drop(storage_v1_again);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ============================================================================
+// Down-reorg storage integrity
+//
+// A reorg that LOWERS the tip (new canonical height < old canonical height)
+// must purge the canonical index (`height_to_hash`) and headers for the
+// orphaned heights above the new tip, so `get_canonical_hash_at_height` and
+// `get_header` never return the OLD canonical chain's blocks. Historical
+// block DATA and the `hash_to_height` index of the orphaned blocks may stay
+// (they are historical/orphan storage, not the canonical index).
+// ============================================================================
+
+/// Build a crafted block at `height` linking to `prev` with a distinct
+/// nonce, so its hash differs from any same-height block with a different
+/// nonce (no PoW/validation at the storage layer).
+fn block_at(height: u32, prev: Hash, nonce: u64) -> Block {
+    Block {
+        header: BlockHeader {
+            version: 1,
+            previous_hash: prev,
+            state_root: Hash::blake3(format!("state-{height}-{nonce}").as_bytes()),
+            tx_merkle_root: Hash::ZERO,
+            timestamp: 1_700_000_000 + height as u64 * 10,
+            bits: CompactTarget::DIFFICULTY_1,
+            height: BlockHeight(height),
+            nonce,
+        },
+        transactions: vec![],
+    }
+}
+
+#[test]
+fn down_reorg_purges_stale_canonical_heights() {
+    let dir = test_dir("downreorg");
+    let storage = Storage::open(&dir).unwrap();
+
+    // Main chain 0..=10 (old canonical).
+    let (hashes, _old_tip) = commit_prefix(&storage, 10);
+    assert_eq!(
+        storage.get_canonical_hash_at_height(10).unwrap(),
+        Some(hashes[&10])
+    );
+
+    // Candidate down-reorg: fork at height 5, candidate 6B,7B,8B (new
+    // canonical tip 8, strictly below old tip 10).
+    let b6 = block_at(6, hashes[&5], 0xE1);
+    let b7 = block_at(7, b6.hash(), 0xE2);
+    let b8 = block_at(8, b7.hash(), 0xE3);
+    let tip_down = PersistedTip {
+        height: 8,
+        hash: b8.hash(),
+        cumulative_work: [0x08u8; 32],
+        supply: state_for_prefix(8).total_supply(),
+    };
+    storage
+        .commit_chain(
+            &[b6.clone(), b7.clone(), b8.clone()],
+            &tip_down,
+            &state_for_prefix(8),
+            10,
+        )
+        .unwrap();
+    storage.flush().unwrap();
+
+    // New canonical heights 6..8 point at the candidate chain.
+    assert_eq!(
+        storage.get_canonical_hash_at_height(6).unwrap(),
+        Some(b6.hash())
+    );
+    assert_eq!(
+        storage.get_canonical_hash_at_height(7).unwrap(),
+        Some(b7.hash())
+    );
+    assert_eq!(
+        storage.get_canonical_hash_at_height(8).unwrap(),
+        Some(b8.hash())
+    );
+    assert_eq!(storage.get_tip().unwrap().unwrap().height, 8);
+
+    // The canonical index above the new tip must be GONE (never the old
+    // canonical chain's hashes).
+    assert_eq!(
+        storage.get_canonical_hash_at_height(9).unwrap(),
+        None,
+        "height 9 must not resolve to the old canonical chain"
+    );
+    assert_eq!(
+        storage.get_canonical_hash_at_height(10).unwrap(),
+        None,
+        "height 10 must not resolve to the old canonical chain"
+    );
+    assert_eq!(
+        storage.get_header(9).unwrap(),
+        None,
+        "header 9 must not resolve to the old canonical chain"
+    );
+    assert_eq!(
+        storage.get_header(10).unwrap(),
+        None,
+        "header 10 must not resolve to the old canonical chain"
+    );
+
+    // Historical/orphan block DATA stays available by hash (not canonical).
+    assert!(storage.get_block_by_hash(&hashes[&9]).unwrap().is_some());
+    assert!(storage.get_block_by_hash(&hashes[&10]).unwrap().is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Down-reorg then unclean reopen: restart reconstruction must see exactly
+/// the new canonical chain (tip 8, no stale heights 9/10).
+#[test]
+fn down_reorg_survives_restart() {
+    let dir = test_dir("downreorg_restart");
+    let storage = Storage::open(&dir).unwrap();
+
+    let (hashes, _) = commit_prefix(&storage, 10);
+    let b6 = block_at(6, hashes[&5], 0xF1);
+    let b7 = block_at(7, b6.hash(), 0xF2);
+    let b8 = block_at(8, b7.hash(), 0xF3);
+    let tip_down = PersistedTip {
+        height: 8,
+        hash: b8.hash(),
+        cumulative_work: [0x08u8; 32],
+        supply: state_for_prefix(8).total_supply(),
+    };
+    storage
+        .commit_chain(
+            &[b6.clone(), b7.clone(), b8.clone()],
+            &tip_down,
+            &state_for_prefix(8),
+            10,
+        )
+        .unwrap();
+    storage.flush().unwrap();
+    drop(storage);
+
+    // Reopen (≁Erestart reconstruction path).
+    let storage = drop_reopen(&dir);
+    let tip = storage.get_tip().unwrap().unwrap();
+    assert_eq!(tip.height, 8, "restart must see the down-reorged tip");
+    assert_eq!(tip.hash, b8.hash());
+    for h in 0..=8u32 {
+        assert!(
+            storage.get_header(h).unwrap().is_some(),
+            "canonical header {} must exist after restart",
+            h
+        );
+    }
+    assert_eq!(
+        storage.get_canonical_hash_at_height(9).unwrap(),
+        None,
+        "restart must not resolve stale height 9"
+    );
+    assert_eq!(
+        storage.get_canonical_hash_at_height(10).unwrap(),
+        None,
+        "restart must not resolve stale height 10"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

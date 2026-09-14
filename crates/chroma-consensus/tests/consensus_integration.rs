@@ -1055,7 +1055,10 @@ fn test_chain_state_loads_from_storage() {
         state: chroma_state::State::new(),
         tips,
         alt_headers: HashMap::new(),
+        alt_blocks: HashMap::new(),
+        reorg_rejected_blocks: std::collections::HashSet::new(),
         network_magic: REGTEST_MAGIC,
+        last_applied_blocks: Vec::new(),
     };
 
     assert_eq!(chain.tip.height, BlockHeight(0));
@@ -1738,7 +1741,7 @@ fn test_multi_block_chain_state_consistency() {
 /// Mainnet height-1 template enforces real mainnet consensus (no PoW bypass).
 ///
 /// Uses the production mainnet genesis, MAINNET_MAGIC, and the retargeted
-    /// mainnet target: template bits must be 0x1f00a7c5, RandomX epoch 0 must
+/// mainnet target: template bits must be 0x1f00a7c5, RandomX epoch 0 must
 /// resolve through the same init path the miner and the validator share,
 /// real RandomX hashes must NOT meet the mainnet target (difficulty is
 /// real), validation must reject with InvalidProofOfWork, an easy-bits
